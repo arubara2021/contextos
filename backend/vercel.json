@@ -2,30 +2,30 @@
   "version": 2,
   "builds": [
     {
-      "src": "src/api/index.ts",
-      "use": "@vercel/node"
+      "src": "api/index.ts",
+      "use": "@vercel/node@3"
     },
     {
-      "src": "src/api/[...path].ts",
-      "use": "@vercel/node"
+      "src": "api/[...path].ts",
+      "use": "@vercel/node@3"
     },
     {
-      "src": "src/api/cron/decay-scan.ts",
-      "use": "@vercel/node"
+      "src": "api/cron/decay-scan.ts",
+      "use": "@vercel/node@3"
     },
     {
-      "src": "src/api/cron/reminders.ts",
-      "use": "@vercel/node"
+      "src": "api/cron/reminders.ts",
+      "use": "@vercel/node@3"
     }
   ],
   "routes": [
     {
       "src": "/api/cron/(.*)",
-      "dest": "/src/api/cron/$1"
+      "dest": "/api/cron/$1"
     },
     {
       "src": "/api/(.*)",
-      "dest": "/src/api/index"
+      "dest": "/api/index"
     }
   ]
 }
