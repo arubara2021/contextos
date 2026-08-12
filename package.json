@@ -1,0 +1,24 @@
+{
+  "name": "contextos",
+  "private": true,
+  "version": "1.0.0",
+  "description": "ContextOS — persistent memory for AI (CockroachDB × Bedrock)",
+  "scripts": {
+    "dev": "concurrently -k -n backend,frontend -c blue,green \"cd backend && npm run dev\" \"cd frontend && npm run dev\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "cd frontend && npm run dev",
+    "build:frontend": "cd frontend && npm run build",
+    "db:init": "cd backend && npx ts-node src/scripts/init-db.ts",
+    "db:seed": "cd backend && npx ts-node src/scripts/seed-demo.ts",
+    "db:seed-graph": "cd backend && npx ts-node src/scripts/seed-graph.ts",
+    "db:setup": "npm run db:init && npm run db:seed && npm run db:seed-graph",
+    "typecheck:backend": "cd backend && npx tsc --noEmit",
+    "typecheck:frontend": "cd frontend && npx tsc --noEmit"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "dependencies": {
+    "pdf-parse": "^2.4.5"
+  }
+}

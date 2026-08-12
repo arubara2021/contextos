@@ -1,0 +1,372 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ContextOS Serverless Infrastructure
+
+Transform: AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: nodejs20.x
+    Architectures:
+      - x86_64
+    Environment:
+      Variables:
+        COCKROACH_CONNECTION_STRING: !Ref CockroachConnectionString
+        AWS_REGION: !Ref AWS::Region
+        BEDROCK_MODEL_ID: !Ref BedrockModelId
+        BEDROCK_EMBEDDING_MODEL_ID: !Ref BedrockEmbeddingModelId
+        EMBEDDING_DIMENSION: !Ref EmbeddingDimension
+        JWT_SECRET: !Ref JwtSecret
+        NODE_ENV: !Ref Environment
+        S3_BUCKET_NAME: !Ref StorageBucket
+        MAX_CONTEXT_MEMORIES: !Ref MaxContextMemories
+        DEFAULT_DECAY_RATE: !Ref DefaultDecayRate
+        STRONG_THRESHOLD: !Ref StrongThreshold
+        FADING_THRESHOLD: !Ref FadingThreshold
+        CRITICAL_THRESHOLD: !Ref CriticalThreshold
+        FORGOTTEN_THRESHOLD: !Ref ForgottenThreshold
+    Tags:
+      Project: contextos
+      ManagedBy: cloudformation
+
+Parameters:
+  Environment:
+    Type: String
+    Default: production
+    AllowedValues:
+      - development
+      - staging
+      - production
+
+  CockroachConnectionString:
+    Type: String
+    NoEcho: true
+    Description: CockroachDB connection string
+
+  BedrockModelId:
+    Type: String
+    Default: anthropic.claude-3-5-sonnet-20241022-v2:0
+
+  BedrockEmbeddingModelId:
+    Type: String
+    Default: amazon.titan-embed-text-v2:0
+
+  EmbeddingDimension:
+    Type: Number
+    Default: 1536
+
+  JwtSecret:
+    Type: String
+    NoEcho: true
+    MinLength: 32
+    Description: JWT signing secret
+
+  MaxContextMemories:
+    Type: Number
+    Default: 20
+
+  DefaultDecayRate:
+    Type: Number
+    Default: 0.15
+
+  StrongThreshold:
+    Type: Number
+    Default: 0.7
+
+  FadingThreshold:
+    Type: Number
+    Default: 0.4
+
+  CriticalThreshold:
+    Type: Number
+    Default: 0.4
+
+  ForgottenThreshold:
+    Type: Number
+    Default: 0.1
+
+Resources:
+  StorageBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "contextos-storage-${AWS::AccountId}-${Environment}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+          - Id: AbortIncompleteMultipart
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      Tags:
+        - Key: Project
+          Value: contextos
+        - Key: Environment
+          Value: !Ref Environment
+
+  BackupsPrefix:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "contextos-backups-${AWS::AccountId}-${Environment}"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: RetainBackups
+            Status: Enabled
+            ExpirationInDays: 365
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  IngestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "contextos-ingest-${Environment}"
+      Handler: handler.handler
+      Description: Ingests messages and documents into the memory system
+      CodeUri: functions/ingest
+      Policies:
+        - BedrockInvokePolicy:
+            ModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/*"
+        - S3ReadPolicy:
+            BucketName: !Ref StorageBucket
+        - S3CrudPolicy:
+            BucketName: !Ref StorageBucket
+      Events:
+        IngestApi:
+          Type: Api
+          Properties:
+            Path: /api/ingest
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  RetrieveFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "contextos-retrieve-${Environment}"
+      Handler: handler.handler
+      Description: Retrieves relevant memories for a query
+      CodeUri: functions/retrieve
+      Timeout: 15
+      MemorySize: 1024
+      Policies:
+        - BedrockInvokePolicy:
+            ModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/*"
+      Events:
+        RetrieveApi:
+          Type: Api
+          Properties:
+            Path: /api/retrieve
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  InjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "contextos-inject-${Environment}"
+      Handler: handler.handler
+      Description: Assembles and injects context into prompts
+      CodeUri: functions/inject
+      Timeout: 10
+      Events:
+        InjectApi:
+          Type: Api
+          Properties:
+            Path: /api/inject
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  ProcessFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "contextos-process-${Environment}"
+      Handler: handler.handler
+      Description: Processes AI responses and triggers re-ingestion
+      CodeUri: functions/process
+      Policies:
+        - BedrockInvokePolicy:
+            ModelArn: !Sub "arn:aws:bedrock:${AWS::Region}::foundation-model/*"
+      Events:
+        ProcessApi:
+          Type: Api
+          Properties:
+            Path: /api/process
+            Method: POST
+            RestApiId: !Ref ApiGateway
+
+  DecayScanFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "contextos-decay-scan-${Environment}"
+      Handler: handler.handler
+      Description: Runs periodic decay scanning on all memories
+      CodeUri: functions/decay
+      Timeout: 300
+      MemorySize: 1024
+      Events:
+        ScheduledScan:
+          Type: Schedule
+          Properties:
+            Schedule: rate(6 hours)
+            Description: Runs decay scan every 6 hours
+            Enabled: true
+
+  ReminderFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "contextos-reminder-${Environment}"
+      Handler: handler.handler
+      Description: Dispatches memory reminders to users
+      CodeUri: functions/reminder
+      Events:
+        ScheduledReminder:
+          Type: Schedule
+          Properties:
+            Schedule: rate(4 hours)
+            Description: Checks for critical memories every 4 hours
+            Enabled: true
+
+  ApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "contextos-api-${Environment}"
+      StageName: !Ref Environment
+      Cors:
+        AllowMethods: "'GET,POST,PATCH,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,Authorization'"
+        AllowOrigin: "'*'"
+      Auth:
+        DefaultAuthorizer: JWTAuthorizer
+        Authorizers:
+          JWTAuthorizer:
+            FunctionArn: !GetAtt AuthFunction.Arn
+            Identity:
+              Header: Authorization
+              ValidationExpression: "^Bearer [-0-9a-zA-z\\.]*$"
+      AccessLogSetting:
+        DestinationArn: !GetAtt ApiAccessLogGroup.Arn
+        Format: >-
+          {"requestId":"$context.requestId",
+          "ip":"$context.identity.sourceIp",
+          "requestTime":"$context.requestTime",
+          "httpMethod":"$context.httpMethod",
+          "path":"$context.path",
+          "status":"$context.status",
+          "responseLength":"$context.responseLength"}
+      MethodSettings:
+        - MetricsEnabled: true
+          ResourcePath: "/*"
+          HttpMethod: "*"
+          ThrottlingBurstLimit: 100
+          ThrottlingRateLimit: 50
+
+  AuthFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "contextos-auth-${Environment}"
+      Handler: handler.handler
+      Description: JWT authorizer for API Gateway
+      CodeUri: functions/auth
+      Timeout: 5
+      MemorySize: 256
+
+  ApiAccessLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/apigateway/contextos-${Environment}"
+      RetentionInDays: 30
+
+  IngestLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/contextos-ingest-${Environment}"
+      RetentionInDays: 14
+
+  RetrieveLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/contextos-retrieve-${Environment}"
+      RetentionInDays: 14
+
+  DecayScanLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/contextos-decay-scan-${Environment}"
+      RetentionInDays: 30
+
+  ReminderLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/contextos-reminder-${Environment}"
+      RetentionInDays: 30
+
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "contextos-dlq-${Environment}"
+      MessageRetentionPeriod: 1209600
+      KmsMasterKeyId: alias/aws/sqs
+
+  ProcessingQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "contextos-processing-${Environment}"
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 86400
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+Outputs:
+  ApiEndpoint:
+    Description: API Gateway endpoint URL
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+
+  StorageBucketName:
+    Description: S3 storage bucket name
+    Value: !Ref StorageBucket
+    Export:
+      Name: !Sub "${AWS::StackName}-StorageBucket"
+
+  StorageBucketArn:
+    Description: S3 storage bucket ARN
+    Value: !GetAtt StorageBucket.Arn
+
+  IngestFunctionArn:
+    Description: Ingest function ARN
+    Value: !GetAtt IngestFunction.Arn
+
+  RetrieveFunctionArn:
+    Description: Retrieve function ARN
+    Value: !GetAtt RetrieveFunction.Arn
+
+  ProcessingQueueUrl:
+    Description: Processing queue URL
+    Value: !Ref ProcessingQueue
+
+  DeadLetterQueueUrl:
+    Description: Dead letter queue URL
+    Value: !Ref DeadLetterQueue

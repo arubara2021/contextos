@@ -1,0 +1,21 @@
+{
+  "name": "contextos-reminder-lambda",
+  "version": "1.0.0",
+  "description": "ContextOS Lambda function for memory reminder dispatching",
+  "main": "handler.js",
+  "private": true,
+  "dependencies": {
+    "pg": "^8.12.0",
+    "uuid": "^10.0.0"
+  },
+  "devDependencies": {
+    "@types/aws-lambda": "^8.10.140",
+    "@types/node": "^20.14.10",
+    "@types/pg": "^8.11.6",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.5.3"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

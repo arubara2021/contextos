@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Environment files (secrets)
+.env
+.env.local
+.env.*.local
+backend/.env
+frontend/.env
+
+# Build output
+dist/
+frontend/dist/
+backend/dist/
+
+docs/
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+npm-debug.log*
+
+# Python scripts (used locally for dump/audit)
+new.py
+*.pyc
+
+# Archive (not needed in production)
+archive/
+
+# Infrastructure (Terraform/CDK - keep if you want, ignore if local only)
+# infrastructure/
+
+# Coverage
+coverage/
+
+# Misc
+.mimocode/
+*.tgz

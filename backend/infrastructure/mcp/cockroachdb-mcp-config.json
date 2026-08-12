@@ -1,0 +1,227 @@
+{
+  "$schema": "https://modelcontextprotocol.io/schema/config.schema.json",
+  "description": "ContextOS CockroachDB MCP Server Configuration",
+  "version": "1.0.0",
+  "mcpServers": {
+    "cockroachdb": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-postgres"
+      ],
+      "env": {
+        "POSTGRES_CONNECTION_STRING": "${COCKROACH_CONNECTION_STRING}"
+      },
+      "capabilities": [
+        "resources",
+        "tools",
+        "prompts"
+      ],
+      "disabled": false
+    }
+  },
+  "contextos": {
+    "database": {
+      "engine": "cockroachdb",
+      "version": "23.1+",
+      "cluster": "contextos-${ENVIRONMENT}",
+      "features": {
+        "vectorSearch": true,
+        "jsonb": true,
+        "fullTextSearch": true,
+        "uuid": true,
+        "timestamps": true,
+        "cascadingDeletes": true
+      },
+      "tables": {
+        "buckets": {
+          "description": "Canonical memory buckets with normalized keys",
+          "primaryKey": "bucket_id",
+          "indexes": [
+            "idx_buckets_normalized (UNIQUE)",
+            "idx_buckets_strength",
+            "idx_buckets_concept_type",
+            "idx_buckets_last_accessed",
+            "idx_buckets_importance"
+          ],
+          "foreignKeys": [],
+          "estimatedRowCount": "10K-1M"
+        },
+        "bucket_items": {
+          "description": "Individual items within a memory bucket",
+          "primaryKey": "item_id",
+          "indexes": [
+            "idx_bucket_items_bucket_id"
+          ],
+          "foreignKeys": [
+            "bucket_id -> buckets(bucket_id) ON DELETE CASCADE"
+          ],
+          "estimatedRowCount": "50K-5M"
+        },
+        "embeddings": {
+          "description": "Vector embeddings for semantic search",
+          "primaryKey": "embedding_id",
+          "indexes": [
+            "idx_embeddings_bucket_id (UNIQUE)"
+          ],
+          "foreignKeys": [
+            "bucket_id -> buckets(bucket_id) ON DELETE CASCADE"
+          ],
+          "estimatedRowCount": "10K-1M"
+        },
+        "relationships": {
+          "description": "Typed relationships between memory buckets",
+          "primaryKey": "relationship_id",
+          "indexes": [
+            "idx_relationships_source",
+            "idx_relationships_target",
+            "idx_relationships_type",
+            "idx_relationships_confidence"
+          ],
+          "foreignKeys": [],
+          "constraints": [
+            "uq_relationship UNIQUE (source_bucket, target_bucket, relation_type)"
+          ],
+          "estimatedRowCount": "50K-5M"
+        },
+        "messages": {
+          "description": "Chat messages in conversations",
+          "primaryKey": "message_id",
+          "indexes": [
+            "idx_messages_session_id",
+            "idx_messages_timestamp"
+          ],
+          "foreignKeys": [
+            "session_id -> sessions(session_id) ON DELETE CASCADE"
+          ],
+          "estimatedRowCount": "100K-10M"
+        },
+        "raw_chunks": {
+          "description": "Normalized text chunks from messages",
+          "primaryKey": "chunk_id",
+          "indexes": [
+            "idx_raw_chunks_message_id"
+          ],
+          "foreignKeys": [
+            "message_id -> messages(message_id) ON DELETE CASCADE"
+          ],
+          "estimatedRowCount": "500K-50M"
+        },
+        "sessions": {
+          "description": "Chat sessions belonging to users",
+          "primaryKey": "session_id",
+          "indexes": [
+            "idx_sessions_user_id",
+            "idx_sessions_updated_at"
+          ],
+          "foreignKeys": [
+            "user_id -> users(user_id) ON DELETE CASCADE"
+          ],
+          "estimatedRowCount": "1K-100K"
+        },
+        "users": {
+          "description": "Registered users",
+          "primaryKey": "user_id",
+          "indexes": [
+            "idx_users_email (UNIQUE)"
+          ],
+          "foreignKeys": [],
+          "estimatedRowCount": "100-1M"
+        },
+        "documents": {
+          "description": "Uploaded documents for ingestion",
+          "primaryKey": "document_id",
+          "indexes": [
+            "idx_documents_uploaded_at"
+          ],
+          "foreignKeys": [],
+          "estimatedRowCount": "1K-100K"
+        },
+        "reminders": {
+          "description": "Memory reminders for users",
+          "primaryKey": "reminder_id",
+          "indexes": [
+            "idx_reminders_user_id",
+            "idx_reminders_dismissed",
+            "idx_reminders_created_at"
+          ],
+          "foreignKeys": [
+            "user_id -> users(user_id) ON DELETE CASCADE"
+          ],
+          "estimatedRowCount": "1K-100K"
+        },
+        "contradictions": {
+          "description": "Detected contradictions in memory",
+          "primaryKey": "contradiction_id",
+          "indexes": [
+            "idx_contradictions_user_id",
+            "idx_contradictions_resolved"
+          ],
+          "foreignKeys": [
+            "user_id -> users(user_id) ON DELETE CASCADE",
+            "existing_bucket_id -> buckets(bucket_id) ON DELETE CASCADE"
+          ],
+          "estimatedRowCount": "100-10K"
+        }
+      }
+    },
+    "connectionPool": {
+      "max": 20,
+      "idleTimeoutMs": 30000,
+      "connectionTimeoutMs": 10000,
+      "statementTimeoutMs": 30000,
+      "queryTimeoutMs": 30000
+    },
+    "mcp": {
+      "endpoint": "http://localhost:3100",
+      "protocol": "jsonrpc-2.0",
+      "transport": "http",
+      "requestTimeoutMs": 30000,
+      "maxRetries": 2,
+      "retryDelayMs": 1000,
+      "allowedOperations": [
+        "SELECT",
+        "INSERT",
+        "UPDATE",
+        "DELETE"
+      ],
+      "blockedOperations": [
+        "DROP",
+        "ALTER",
+        "TRUNCATE",
+        "CREATE",
+        "GRANT",
+        "REVOKE"
+      ]
+    },
+    "vectorSearch": {
+      "enabled": true,
+      "dimension": 1536,
+      "metric": "cosine",
+      "indexType": "ivfflat",
+      "lists": 100,
+      "probes": 10
+    },
+    "security": {
+      "requireAuth": true,
+      "encryptInTransit": true,
+      "maskSensitiveData": true,
+      "sensitiveFields": [
+        "password_hash",
+        "jwt_secret",
+        "connection_string"
+      ],
+      "auditLogging": true,
+      "maxQueryRows": 10000,
+      "maxQueryTimeMs": 30000
+    },
+    "monitoring": {
+      "slowQueryThresholdMs": 1000,
+      "logAllQueries": false,
+      "logSlowQueries": true,
+      "logErrors": true,
+      "metricsEnabled": true,
+      "healthCheckInterval": 30000
+    }
+  }
+}
