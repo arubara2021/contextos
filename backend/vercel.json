@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "functions": {
+    "api/*.ts": {
+      "runtime": "@vercel/node@3"
+    },
+    "api/cron/*.ts": {
+      "runtime": "@vercel/node@3"
+    }
+  }
+}
