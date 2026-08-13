@@ -2,22 +2,21 @@ import app from "../src/app";
 import { initializeDependencies } from "../src/api/dependencies";
 import { initPool, initDatabase } from "../src/database";
 
-let initialized = false;
-let initError: string | null = null;
+let ready: Promise<void> | null = null;
 
-async function ensureReady() {
-    if (initialized) return;
-    if (initError) throw new Error(initError);
-    try {
-        initPool();
-        await initDatabase();
-        initializeDependencies();
-        initialized = true;
-    } catch (error) {
-        initError = (error as Error).message;
-        throw error;
+function ensureReady(): Promise<void> {
+    if (!ready) {
+        ready = (async () => {
+            initPool();
+            await initDatabase();
+            initializeDependencies();
+        })();
     }
+    return ready;
 }
+
+// Pre-initialize on module load (warm starts)
+const warmup = ensureReady();
 
 export default async function handler(req: any, res: any) {
     try {
@@ -25,9 +24,8 @@ export default async function handler(req: any, res: any) {
         return app(req, res);
     } catch (error) {
         return res.status(503).json({
-            error: "Database initialization failed",
+            error: "Service unavailable",
             message: (error as Error).message,
-            connectionSet: Boolean(process.env.COCKROACH_CONNECTION_STRING),
         });
     }
 }
