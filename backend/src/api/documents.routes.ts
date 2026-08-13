@@ -948,7 +948,7 @@ router.post(
       }
 
       if (processingMode === "local") {
-        void processDocumentAsync(
+        const work = processDocumentAsync(
           jobId,
           req.userId,
           file.originalname,
@@ -963,37 +963,43 @@ router.post(
             error: (err as Error).message,
           });
         });
+
+        try {
+          const { waitUntil } = await import("@vercel/functions");
+          waitUntil(work);
+        } catch {
+          void work;
+        }
+
+        res.status(202).json({
+          jobId,
+          filename: file.originalname,
+          fileType,
+          format,
+          sizeBytes: file.size,
+          status: "processing",
+        });
+      } catch (error) {
+        const err = error as Error;
+
+        if (err.message.includes("Unsupported file type")) {
+          res.status(415).json({ error: err.message });
+          return;
+        }
+
+        if (err.message.includes("File too large")) {
+          res.status(413).json({ error: "File exceeds maximum size of 4MB (Vercel limit)" });
+          return;
+        }
+
+        logger.error("POST /documents/upload failed", {
+          filename: req.file?.originalname,
+          error: err.message,
+        });
+
+        res.status(500).json({ error: "Failed to process document" });
       }
-
-      res.status(202).json({
-        jobId,
-        filename: file.originalname,
-        fileType,
-        format,
-        sizeBytes: file.size,
-        status: "processing",
-      });
-    } catch (error) {
-      const err = error as Error;
-
-      if (err.message.includes("Unsupported file type")) {
-        res.status(415).json({ error: err.message });
-        return;
-      }
-
-      if (err.message.includes("File too large")) {
-        res.status(413).json({ error: "File exceeds maximum size of 4MB (Vercel limit)" });
-        return;
-      }
-
-      logger.error("POST /documents/upload failed", {
-        filename: req.file?.originalname,
-        error: err.message,
-      });
-
-      res.status(500).json({ error: "Failed to process document" });
     }
-  }
 );
 
 router.get(
