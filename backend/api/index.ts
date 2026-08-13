@@ -12,8 +12,7 @@ function ensureReady(): Promise<void> {
     if (!ready) {
         ready = (async () => {
             initPool();
-            // Skip heavy schema migrations on Vercel cold starts to prevent 5-10s timeout/lag.
-            // Run `npm run init-db` manually locally for schema updates.
+            // Skip heavy schema migrations on Vercel to prevent 2-3s cold start lag.
             if (!process.env.VERCEL) {
                 await initDatabase();
             }

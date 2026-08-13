@@ -135,8 +135,8 @@ export function DocumentUpload({ upload, onUploaded }: DocumentUploadProps) {
 
         <span
           className={`relative z-10 flex h-14 w-14 items-center justify-center rounded-2xl border transition-all duration-300 ${dragging || uploading
-              ? "border-ember/50 bg-ember-faint text-ember"
-              : "border-line-strong bg-coal text-stone"
+            ? "border-ember/50 bg-ember-faint text-ember"
+            : "border-line-strong bg-coal text-stone"
             }`}
         >
           <Icon
@@ -169,7 +169,7 @@ export function DocumentUpload({ upload, onUploaded }: DocumentUploadProps) {
               )}
             </p>
             <p className="t-mono text-[9.5px] uppercase tracking-[0.2em] text-stone">
-              click to browse · pdf docx md txt code · 50 mb max
+              click to browse · pdf docx md txt code · 4 mb max
             </p>
           </div>
         )}

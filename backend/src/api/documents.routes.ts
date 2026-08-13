@@ -456,13 +456,43 @@ async function processDocumentAsync(
       }
     }
 
-    const doc = await queryOne<{ document_id: string }>(
-      `INSERT INTO documents (filename, file_type, content, content_hash, s3_key, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6::uuid)
-       RETURNING document_id`,
-      [filename, fileType, content, contentHash, s3Key, userId]
-    );
-
+    let doc: { document_id: string } | null = null;
+    try {
+      doc = await queryOne<{ document_id: string }>(
+        `INSERT INTO documents (filename, file_type, content, content_hash, s3_key, user_id)
+     VALUES ($1, $2, $3, $4, $5, $6::uuid)
+     RETURNING document_id`,
+        [filename, fileType, content, contentHash, s3Key, userId]
+      );
+    } catch (insertErr: any) {
+      // Catch the race condition duplicate key error gracefully
+      if (insertErr.message.includes("duplicate key") && insertErr.message.includes("idx_documents_user_content_hash")) {
+        doc = await queryOne<{ document_id: string }>(
+          `SELECT document_id FROM documents WHERE user_id = $1::uuid AND content_hash = $2 LIMIT 1`,
+          [userId, contentHash]
+        );
+        if (doc) {
+          await updateJob(jobId, {
+            fileId: doc.document_id,
+            status: "complete",
+            stage: "complete",
+            progress: 100,
+            message: "Duplicate document skipped",
+            completedAt: new Date(),
+            result: {
+              fileId: doc.document_id, filename, fieldType: "other", domain: "general",
+              status: "duplicate", chunksCreated: 0, conceptsExtracted: 0,
+              embeddingsGenerated: 0, newBuckets: 0, mergedBuckets: 0,
+              durationMs: 0, errors: [], connections: emptyConnectionStats(),
+              relatedDocuments: [], topConnectedMemories: [], extraction: null,
+            },
+          });
+          res.status(202).json({ jobId, filename: file.originalname, fileType, format, sizeBytes: file.size, status: "processing" });
+          return;
+        }
+      }
+      throw insertErr;
+    }
     if (!doc) {
       throw new Error("Failed to create document record");
     }
@@ -777,7 +807,7 @@ async function deleteUploadedFileLocator(locator: string): Promise<void> {
 }
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
     const allowedMimes = [
       "text/plain",
@@ -952,7 +982,7 @@ router.post(
       }
 
       if (err.message.includes("File too large")) {
-        res.status(413).json({ error: "File exceeds maximum size of 50MB" });
+        res.status(413).json({ error: "File exceeds maximum size of 4MB (Vercel limit)" });
         return;
       }
 
