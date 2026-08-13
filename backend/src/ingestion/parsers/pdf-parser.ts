@@ -23,18 +23,24 @@ const PDFJS_CANDIDATES = [
 async function loadPdfjs(): Promise<any> {
   if (pdfjsChecked) return pdfjsLib;
   pdfjsChecked = true;
-  const nativeImport = new Function(
-    "specifier",
-    "return import(specifier)"
-  ) as (specifier: string) => Promise<any>;
+
+  const candidates = [
+    "pdfjs-dist/legacy/build/pdf.mjs",
+    "pdfjs-dist/legacy/build/pdf.js",
+    "pdfjs-dist/build/pdf.mjs",
+    "pdfjs-dist/build/pdf.js",
+    "pdfjs-dist",
+  ];
+
   const errors: string[] = [];
-  for (const candidate of PDFJS_CANDIDATES) {
+
+  for (const candidate of candidates) {
     try {
-      const mod = await nativeImport(candidate);
+      const mod = await import(candidate);
       const lib = mod && (typeof mod.getDocument === "function" ? mod : mod.default);
       if (lib && typeof lib.getDocument === "function") {
         pdfjsLib = lib;
-        logger.info("pdfjs-dist loaded for Node", { candidate });
+        logger.info("pdfjs-dist loaded", { candidate });
         return pdfjsLib;
       }
       errors.push(`${candidate}: no getDocument export`);
@@ -42,45 +48,17 @@ async function loadPdfjs(): Promise<any> {
       errors.push(`${candidate}: ${(err as Error).message}`);
     }
   }
-  logger.warn("pdfjs-dist could not be loaded in Node; using pdf-parse fallback", {
-    tried: PDFJS_CANDIDATES,
-    errors,
-  });
+
+  logger.warn("pdfjs-dist could not be loaded", { errors });
   pdfjsLib = null;
   return null;
 }
 
 function getStandardFontDataUrl(): string {
-  try {
-    const path = require("path");
-    const pdfjsPath = require.resolve("pdfjs-dist/package.json");
-    return path.join(path.dirname(pdfjsPath), "standard_fonts") + "/";
-  } catch {
-    return "";
-  }
+  return "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/standard_fonts/";
 }
 function getPdfWorkerSrc(): string {
-  try {
-    const path = require("path");
-    const fs = require("fs");
-    const { pathToFileURL } = require("url");
-    const pdfjsPath = require.resolve("pdfjs-dist/package.json");
-    const dir = path.dirname(pdfjsPath);
-    const candidates = [
-      path.join(dir, "legacy", "build", "pdf.worker.mjs"),
-      path.join(dir, "legacy", "build", "pdf.worker.min.mjs"),
-      path.join(dir, "build", "pdf.worker.mjs"),
-      path.join(dir, "build", "pdf.worker.min.mjs"),
-    ];
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) {
-        return pathToFileURL(candidate).toString();
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return "pdfjs-dist/legacy/build/pdf.worker.mjs";
+  return "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.mjs";
 }
 interface PageTextItem {
   str: string;

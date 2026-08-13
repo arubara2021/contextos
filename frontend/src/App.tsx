@@ -30,7 +30,7 @@ export default function App() {
               <Route path={ROUTES.onboarding} element={<OnboardingPage />} />
             </Route>
           </Route>
-          <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/" />} />
         </Routes>
       </AuthProvider>
     </BrowserRouter>
