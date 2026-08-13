@@ -7,6 +7,8 @@ import type {
 import { cleanPdfText } from "../../utils/text-cleaner";
 import logger from "../../utils/logger";
 
+// eslint-disable-next-line @typescript-eslint/no-require-imports
+const pdfParse = require("pdf-parse") as (buffer: Buffer) => Promise<{ text: string; numpages: number; info: Record<string, unknown> }>;
 let pdfjsLib: any = null;
 let pdfjsChecked = false;
 
@@ -714,80 +716,41 @@ async function tryFallbackPdfParse(
   buffer: Buffer,
   errors: string[]
 ): Promise<ParsedDocument> {
-  let pdfParseModule: any = null;
   try {
-    pdfParseModule = require("pdf-parse");
-  } catch {
-    try {
-      pdfParseModule = await import("pdf-parse");
-    } catch {
-      errors.push("Neither pdfjs-dist nor pdf-parse available");
-      return emptyResult(errors);
-    }
-  }
+    const data = await pdfParse(buffer);
+    let rawText = typeof data.text === "string" ? data.text : "";
+    const pageCount = typeof data.numpages === "number" ? data.numpages : null;
+    const info = data.info || {};
 
-  let rawText = "";
-  let pageCount: number | null = null;
-  let info: any = {};
-  const defaultExport = pdfParseModule.default || pdfParseModule;
+    rawText = cleanPdfText(rawText);
+    const wordCount = rawText.split(/\s+/).filter((w: string) => w.length > 0).length;
+    logger.info("PDF fallback parse complete", {
+      pages: pageCount,
+      extractedWords: wordCount,
+      extractedChars: rawText.length,
+    });
 
-  if (typeof defaultExport === "function") {
-    try {
-      const data = await defaultExport(buffer);
-      rawText = typeof data.text === "string" ? data.text : "";
-      pageCount = typeof data.numpages === "number" ? data.numpages : null;
-      info = data.info || {};
-    } catch (err) {
-      errors.push(`pdf-parse function error: ${(err as Error).message}`);
+    if (rawText.trim().length < 10) {
+      errors.push("PDF contains no extractable text");
       return emptyResult(errors);
     }
-  } else if (pdfParseModule.PDFParse && typeof pdfParseModule.PDFParse === "function") {
-    try {
-      const parser = new pdfParseModule.PDFParse(new Uint8Array(buffer));
-      await parser.load();
-      const raw = await parser.getText();
-      rawText = typeof raw === "string" ? raw : raw?.text || "";
-      const pdfDoc = parser.pdf || parser._pdf || parser._pdfDocument;
-      if (pdfDoc && typeof pdfDoc.numPages === "number") pageCount = pdfDoc.numPages;
-      try {
-        info = await parser.getInfo();
-      } catch {
-        /* ignore */
-      }
-    } catch (err) {
-      errors.push(`pdf-parse class error: ${(err as Error).message}`);
-      return emptyResult(errors);
-    }
-  } else {
-    errors.push("pdf-parse module found but no usable API");
+
+    const bodyOnly = stripBackMatter(rawText);
+    const embedded = buildMetadata(info, pageCount);
+    const sections = detectSections(bodyOnly);
+    const titleGuess = embedded.title || guessTitle(bodyOnly);
+    if (titleGuess && !embedded.title) embedded.title = titleGuess;
+    const fingerprint = buildFingerprint(bodyOnly, sections, embedded, pageCount);
+
+    return {
+      format: "pdf",
+      text: bodyOnly,
+      structure: fingerprint,
+      sections,
+      parseErrors: errors,
+    };
+  } catch (err) {
+    errors.push(`pdf-parse error: ${(err as Error).message}`);
     return emptyResult(errors);
   }
-
-  rawText = cleanPdfText(rawText);
-  const wordCount = rawText.split(/\s+/).filter((w) => w.length > 0).length;
-  logger.info("PDF fallback parse complete", {
-    pages: pageCount,
-    extractedWords: wordCount,
-    extractedChars: rawText.length,
-  });
-
-  if (rawText.trim().length < 10) {
-    errors.push("PDF contains no extractable text");
-    return emptyResult(errors);
-  }
-
-  const bodyOnly = stripBackMatter(rawText);
-  const embedded = buildMetadata(info, pageCount);
-  const sections = detectSections(bodyOnly);
-  const titleGuess = embedded.title || guessTitle(bodyOnly);
-  if (titleGuess && !embedded.title) embedded.title = titleGuess;
-  const fingerprint = buildFingerprint(bodyOnly, sections, embedded, pageCount);
-
-  return {
-    format: "pdf",
-    text: bodyOnly,
-    structure: fingerprint,
-    sections,
-    parseErrors: errors,
-  };
 }
