@@ -111,8 +111,7 @@ export class RawStore {
       throw new Error(`Failed to fetch document content from S3: ${s3Key}`);
     }
   }
-
-  async getAllDocuments(): Promise<
+  async getAllDocuments(userId?: string | null): Promise<
     Array<{
       documentId: string;
       filename: string;
@@ -121,11 +120,23 @@ export class RawStore {
     }>
   > {
     try {
-      const rows = await queryMany<DocumentRow>(
-        `SELECT document_id, filename, file_type, uploaded_at
-         FROM documents
-         ORDER BY uploaded_at DESC`
-      );
+      const safeUserId =
+        typeof userId === "string" && /^[0-9a-f-]{36}$/i.test(userId)
+          ? userId
+          : null;
+      const rows = safeUserId
+        ? await queryMany<DocumentRow>(
+          `SELECT document_id, filename, file_type, uploaded_at
+FROM documents
+WHERE user_id = $1::uuid
+ORDER BY uploaded_at DESC`,
+          [safeUserId]
+        )
+        : await queryMany<DocumentRow>(
+          `SELECT document_id, filename, file_type, uploaded_at
+FROM documents
+ORDER BY uploaded_at DESC`
+        );
       return rows.map((row) => ({
         documentId: row.document_id,
         filename: row.filename,
@@ -140,7 +151,7 @@ export class RawStore {
     }
   }
 
-  
+
   async getStorageUsageFromDb(): Promise<{
     totalSizeBytes: number;
     objectCount: number;
@@ -351,12 +362,23 @@ export class RawStore {
       throw error;
     }
   }
-
-  async getTotalMessages(): Promise<number> {
+  async getTotalMessages(userId?: string | null): Promise<number> {
     try {
-      const row = await queryOne<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM messages"
-      );
+      const safeUserId =
+        typeof userId === "string" && /^[0-9a-f-]{36}$/i.test(userId)
+          ? userId
+          : null;
+      const row = safeUserId
+        ? await queryOne<{ count: number }>(
+          `SELECT COUNT(*)::int AS count
+FROM messages m
+JOIN sessions s ON s.session_id = m.session_id
+WHERE s.user_id = $1::uuid`,
+          [safeUserId]
+        )
+        : await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM messages"
+        );
       return row?.count ?? 0;
     } catch (error) {
       logger.error("getTotalMessages failed", {
@@ -365,12 +387,20 @@ export class RawStore {
       throw error;
     }
   }
-
-  async getTotalDocuments(): Promise<number> {
+  async getTotalDocuments(userId?: string | null): Promise<number> {
     try {
-      const row = await queryOne<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM documents"
-      );
+      const safeUserId =
+        typeof userId === "string" && /^[0-9a-f-]{36}$/i.test(userId)
+          ? userId
+          : null;
+      const row = safeUserId
+        ? await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM documents WHERE user_id = $1::uuid",
+          [safeUserId]
+        )
+        : await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM documents"
+        );
       return row?.count ?? 0;
     } catch (error) {
       logger.error("getTotalDocuments failed", {
@@ -380,11 +410,20 @@ export class RawStore {
     }
   }
 
-  async getTotalSessions(): Promise<number> {
+  async getTotalSessions(userId?: string | null): Promise<number> {
     try {
-      const row = await queryOne<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM sessions"
-      );
+      const safeUserId =
+        typeof userId === "string" && /^[0-9a-f-]{36}$/i.test(userId)
+          ? userId
+          : null;
+      const row = safeUserId
+        ? await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM sessions WHERE user_id = $1::uuid",
+          [safeUserId]
+        )
+        : await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM sessions"
+        );
       return row?.count ?? 0;
     } catch (error) {
       logger.error("getTotalSessions failed", {

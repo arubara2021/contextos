@@ -9,5 +9,11 @@
         "api/index.ts": {
             "maxDuration": 60
         }
-    }
+    },
+    "crons": [
+        {
+            "path": "/api/cron/sandbox-sweep",
+            "schedule": "0 * * * *"
+        }
+    ]
 }

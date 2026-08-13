@@ -34,12 +34,18 @@ interface BucketWithComputedStrength {
 }
 
 export class ReminderEngine {
-  async scanForCriticalMemories(): Promise<ReminderMemory[]> {
+  async scanForCriticalMemories(userId?: string | null): Promise<ReminderMemory[]> {
     try {
-      const rows = await queryMany<BucketRow>(
-        "SELECT * FROM buckets WHERE importance >= $1",
-        [config.reminder.minImportance]
-      );
+      const rows =
+        userId && /^[0-9a-f-]{36}$/i.test(userId)
+          ? await queryMany<BucketRow>(
+            "SELECT * FROM buckets WHERE importance >= $1 AND user_id = $2::uuid",
+            [config.reminder.minImportance, userId]
+          )
+          : await queryMany<BucketRow>(
+            "SELECT * FROM buckets WHERE importance >= $1",
+            [config.reminder.minImportance]
+          );
 
       const criticalMemories: ReminderMemory[] = [];
 
@@ -328,7 +334,7 @@ export class ReminderEngine {
 
   async checkAndGenerate(userId: string): Promise<ReminderCheckResult> {
     try {
-      const critical = await this.scanForCriticalMemories();
+      const critical = await this.scanForCriticalMemories(userId);
 
       if (critical.length === 0) {
         return emptyReminderCheck();

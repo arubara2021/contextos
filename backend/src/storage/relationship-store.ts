@@ -381,25 +381,25 @@ export class RelationshipStore {
       if (sourceBucketId && targetBucketId) {
         const existing = userId
           ? await queryOne<{ relationship_id: string }>(
-              `SELECT relationship_id
+            `SELECT relationship_id
                FROM relationships
                WHERE source_bucket_id = $1::uuid
                AND target_bucket_id = $2::uuid
                AND relation_type = $3
                AND (user_id = $4::uuid OR user_id IS NULL)
                LIMIT 1`,
-              [sourceBucketId, targetBucketId, relationType, userId]
-            )
+            [sourceBucketId, targetBucketId, relationType, userId]
+          )
           : await queryOne<{ relationship_id: string }>(
-              `SELECT relationship_id
+            `SELECT relationship_id
                FROM relationships
                WHERE source_bucket_id = $1::uuid
                AND target_bucket_id = $2::uuid
                AND relation_type = $3
                AND user_id IS NULL
                LIMIT 1`,
-              [sourceBucketId, targetBucketId, relationType]
-            );
+            [sourceBucketId, targetBucketId, relationType]
+          );
 
         if (existing) {
           await query(
@@ -802,8 +802,8 @@ export class RelationshipStore {
     const avgConfidence =
       edgeCount > 0
         ? (existing.avgConfidence * existing.edgeCount +
-            incoming.avgConfidence * incoming.edgeCount) /
-          edgeCount
+          incoming.avgConfidence * incoming.edgeCount) /
+        edgeCount
         : incoming.avgConfidence;
 
     return {
@@ -885,8 +885,8 @@ export class RelationshipStore {
           const avgConfidence = round4(row.avg_confidence);
           const correlationScore = round4(
             0.45 * avgConfidence +
-              0.35 * Math.min(1, edgeCount / 5) +
-              0.2 * Math.min(1, edgeCount / 10)
+            0.35 * Math.min(1, edgeCount / 5) +
+            0.2 * Math.min(1, edgeCount / 10)
           );
           incomingLinks.push({
             targetDocumentId: row.other_document_id,
@@ -1165,12 +1165,12 @@ export class RelationshipStore {
     try {
       const idRows = safeUserId
         ? await queryMany<{
-            source_bucket_id: string | null;
-            target_bucket_id: string | null;
-            relation_type: string;
-            confidence: number;
-          }>(
-            `SELECT source_bucket_id, target_bucket_id, relation_type, confidence
+          source_bucket_id: string | null;
+          target_bucket_id: string | null;
+          relation_type: string;
+          confidence: number;
+        }>(
+          `SELECT source_bucket_id, target_bucket_id, relation_type, confidence
              FROM relationships
              WHERE (source_bucket_id = ANY($1::uuid[]) OR target_bucket_id = ANY($1::uuid[]))
              AND source_bucket_id IS NOT NULL
@@ -1178,23 +1178,23 @@ export class RelationshipStore {
              AND (user_id = $2::uuid OR user_id IS NULL)
              ORDER BY confidence DESC
              LIMIT $3`,
-            [safeBucketIds, safeUserId, limit * 2]
-          )
+          [safeBucketIds, safeUserId, limit * 2]
+        )
         : await queryMany<{
-            source_bucket_id: string | null;
-            target_bucket_id: string | null;
-            relation_type: string;
-            confidence: number;
-          }>(
-            `SELECT source_bucket_id, target_bucket_id, relation_type, confidence
+          source_bucket_id: string | null;
+          target_bucket_id: string | null;
+          relation_type: string;
+          confidence: number;
+        }>(
+          `SELECT source_bucket_id, target_bucket_id, relation_type, confidence
              FROM relationships
              WHERE (source_bucket_id = ANY($1::uuid[]) OR target_bucket_id = ANY($1::uuid[]))
              AND source_bucket_id IS NOT NULL
              AND target_bucket_id IS NOT NULL
              ORDER BY confidence DESC
              LIMIT $2`,
-            [safeBucketIds, limit * 2]
-          );
+          [safeBucketIds, limit * 2]
+        );
 
       for (const row of idRows) {
         if (!row.source_bucket_id || !row.target_bucket_id) continue;
@@ -1230,12 +1230,12 @@ export class RelationshipStore {
       if (canonicals.length > 0) {
         const fallbackRows = safeUserId
           ? await queryMany<{
-              source_bucket_id: string | null;
-              target_bucket_id: string | null;
-              relation_type: string;
-              confidence: number;
-            }>(
-              `SELECT r.source_bucket_id,
+            source_bucket_id: string | null;
+            target_bucket_id: string | null;
+            relation_type: string;
+            confidence: number;
+          }>(
+            `SELECT r.source_bucket_id,
                       r.target_bucket_id,
                       r.relation_type,
                       r.confidence
@@ -1248,15 +1248,15 @@ export class RelationshipStore {
                AND (b2.user_id = $2::uuid OR b2.user_id IS NULL)
                ORDER BY r.confidence DESC
                LIMIT $3`,
-              [canonicals, safeUserId, limit * 2]
-            )
+            [canonicals, safeUserId, limit * 2]
+          )
           : await queryMany<{
-              source_bucket_id: string | null;
-              target_bucket_id: string | null;
-              relation_type: string;
-              confidence: number;
-            }>(
-              `SELECT r.source_bucket_id,
+            source_bucket_id: string | null;
+            target_bucket_id: string | null;
+            relation_type: string;
+            confidence: number;
+          }>(
+            `SELECT r.source_bucket_id,
                       r.target_bucket_id,
                       r.relation_type,
                       r.confidence
@@ -1267,8 +1267,8 @@ export class RelationshipStore {
                AND (r.source_bucket_id IS NULL OR r.target_bucket_id IS NULL)
                ORDER BY r.confidence DESC
                LIMIT $2`,
-              [canonicals, limit * 2]
-            );
+            [canonicals, limit * 2]
+          );
 
         for (const row of fallbackRows) {
           if (!row.source_bucket_id || !row.target_bucket_id) continue;
@@ -1302,13 +1302,13 @@ export class RelationshipStore {
     try {
       const idRows = safeUserId
         ? await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
+          RelationshipRow & {
+            connected_bucket_id: string;
+            connected_bucket_name: string;
+            connected_bucket_type: string;
+          }
+        >(
+          `SELECT r.*,
                     b.bucket_id AS connected_bucket_id,
                     b.canonical AS connected_bucket_name,
                     b.concept_type AS connected_bucket_type
@@ -1317,16 +1317,16 @@ export class RelationshipStore {
              WHERE r.source_bucket_id = $1::uuid
              AND (r.user_id = $2::uuid OR r.user_id IS NULL)
              ORDER BY r.confidence DESC`,
-            [bucketId, safeUserId]
-          )
+          [bucketId, safeUserId]
+        )
         : await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
+          RelationshipRow & {
+            connected_bucket_id: string;
+            connected_bucket_name: string;
+            connected_bucket_type: string;
+          }
+        >(
+          `SELECT r.*,
                     b.bucket_id AS connected_bucket_id,
                     b.canonical AS connected_bucket_name,
                     b.concept_type AS connected_bucket_type
@@ -1334,8 +1334,8 @@ export class RelationshipStore {
              JOIN buckets b ON b.bucket_id = r.target_bucket_id
              WHERE r.source_bucket_id = $1::uuid
              ORDER BY r.confidence DESC`,
-            [bucketId]
-          );
+          [bucketId]
+        );
 
       if (idRows.length > 0) {
         return idRows.map((row) =>
@@ -1358,13 +1358,13 @@ export class RelationshipStore {
 
       const rows = safeUserId
         ? await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
+          RelationshipRow & {
+            connected_bucket_id: string;
+            connected_bucket_name: string;
+            connected_bucket_type: string;
+          }
+        >(
+          `SELECT r.*,
                     b.bucket_id AS connected_bucket_id,
                     b.canonical AS connected_bucket_name,
                     b.concept_type AS connected_bucket_type
@@ -1373,16 +1373,16 @@ export class RelationshipStore {
              WHERE r.source_bucket = $1
              AND (b.user_id = $2::uuid OR b.user_id IS NULL)
              ORDER BY r.confidence DESC`,
-            [sourceRow.canonical, safeUserId]
-          )
+          [sourceRow.canonical, safeUserId]
+        )
         : await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
+          RelationshipRow & {
+            connected_bucket_id: string;
+            connected_bucket_name: string;
+            connected_bucket_type: string;
+          }
+        >(
+          `SELECT r.*,
                     b.bucket_id AS connected_bucket_id,
                     b.canonical AS connected_bucket_name,
                     b.concept_type AS connected_bucket_type
@@ -1390,8 +1390,8 @@ export class RelationshipStore {
              JOIN buckets b ON b.canonical = r.target_bucket
              WHERE r.source_bucket = $1
              ORDER BY r.confidence DESC`,
-            [sourceRow.canonical]
-          );
+          [sourceRow.canonical]
+        );
 
       return rows.map((row) =>
         mapRowToRelationshipWithMeta(
@@ -1422,13 +1422,13 @@ export class RelationshipStore {
     try {
       const idRows = safeUserId
         ? await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
+          RelationshipRow & {
+            connected_bucket_id: string;
+            connected_bucket_name: string;
+            connected_bucket_type: string;
+          }
+        >(
+          `SELECT r.*,
                     b.bucket_id AS connected_bucket_id,
                     b.canonical AS connected_bucket_name,
                     b.concept_type AS connected_bucket_type
@@ -1437,16 +1437,16 @@ export class RelationshipStore {
              WHERE r.target_bucket_id = $1::uuid
              AND (r.user_id = $2::uuid OR r.user_id IS NULL)
              ORDER BY r.confidence DESC`,
-            [bucketId, safeUserId]
-          )
+          [bucketId, safeUserId]
+        )
         : await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
+          RelationshipRow & {
+            connected_bucket_id: string;
+            connected_bucket_name: string;
+            connected_bucket_type: string;
+          }
+        >(
+          `SELECT r.*,
                     b.bucket_id AS connected_bucket_id,
                     b.canonical AS connected_bucket_name,
                     b.concept_type AS connected_bucket_type
@@ -1454,8 +1454,8 @@ export class RelationshipStore {
              JOIN buckets b ON b.bucket_id = r.source_bucket_id
              WHERE r.target_bucket_id = $1::uuid
              ORDER BY r.confidence DESC`,
-            [bucketId]
-          );
+          [bucketId]
+        );
 
       if (idRows.length > 0) {
         return idRows.map((row) =>
@@ -1478,13 +1478,13 @@ export class RelationshipStore {
 
       const rows = safeUserId
         ? await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
+          RelationshipRow & {
+            connected_bucket_id: string;
+            connected_bucket_name: string;
+            connected_bucket_type: string;
+          }
+        >(
+          `SELECT r.*,
                     b.bucket_id AS connected_bucket_id,
                     b.canonical AS connected_bucket_name,
                     b.concept_type AS connected_bucket_type
@@ -1493,16 +1493,16 @@ export class RelationshipStore {
              WHERE r.target_bucket = $1
              AND (b.user_id = $2::uuid OR b.user_id IS NULL)
              ORDER BY r.confidence DESC`,
-            [targetRow.canonical, safeUserId]
-          )
+          [targetRow.canonical, safeUserId]
+        )
         : await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
+          RelationshipRow & {
+            connected_bucket_id: string;
+            connected_bucket_name: string;
+            connected_bucket_type: string;
+          }
+        >(
+          `SELECT r.*,
                     b.bucket_id AS connected_bucket_id,
                     b.canonical AS connected_bucket_name,
                     b.concept_type AS connected_bucket_type
@@ -1510,8 +1510,8 @@ export class RelationshipStore {
              JOIN buckets b ON b.canonical = r.source_bucket
              WHERE r.target_bucket = $1
              ORDER BY r.confidence DESC`,
-            [targetRow.canonical]
-          );
+          [targetRow.canonical]
+        );
 
       return rows.map((row) =>
         mapRowToRelationshipWithMeta(
@@ -1630,7 +1630,7 @@ export class RelationshipStore {
             [safeBucketIds[i], safeBucketIds[j]]
           );
           updated += result.rowCount ?? 0;
-        } catch {}
+        } catch { }
       }
     }
 
@@ -1642,7 +1642,7 @@ export class RelationshipStore {
           [bucketId]
         );
         if (row) canonicalMap.set(bucketId, row.canonical);
-      } catch {}
+      } catch { }
     }
 
     const resolvedIds = Array.from(canonicalMap.keys());
@@ -1659,18 +1659,25 @@ export class RelationshipStore {
             [canonA, canonB]
           );
           updated += result.rowCount ?? 0;
-        } catch {}
+        } catch { }
       }
     }
 
     return updated;
   }
 
-  async getTotalCount(): Promise<number> {
+  async getTotalCount(userId?: string | null): Promise<number> {
     try {
-      const row = await queryOne<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM relationships"
-      );
+      const row =
+        userId && isValidUuid(userId)
+          ? await queryOne<{ count: number }>(
+            "SELECT COUNT(*)::int AS count FROM relationships WHERE user_id = $1::uuid",
+            [userId]
+          )
+          : await queryOne<{ count: number }>(
+            "SELECT COUNT(*)::int AS count FROM relationships"
+          );
+      return row?.count ?? 0;
       return row?.count ?? 0;
     } catch (error) {
       logger.error("getTotalCount failed", {
@@ -1790,11 +1797,17 @@ export class RelationshipStore {
     }
   }
 
-  async getAll(): Promise<Relationship[]> {
+  async getAll(userId?: string | null): Promise<Relationship[]> {
     try {
-      const rows = await queryMany<RelationshipRow>(
-        "SELECT * FROM relationships ORDER BY created_at DESC"
-      );
+      const rows =
+        userId && isValidUuid(userId)
+          ? await queryMany<RelationshipRow>(
+            "SELECT * FROM relationships WHERE user_id = $1::uuid ORDER BY created_at DESC",
+            [userId]
+          )
+          : await queryMany<RelationshipRow>(
+            "SELECT * FROM relationships ORDER BY created_at DESC"
+          );
       return rows.map(mapRowToRelationship);
     } catch (error) {
       logger.error("getAll failed", {
@@ -1815,7 +1828,7 @@ export class RelationshipStore {
           try {
             const id = await this.createRelationship(params);
             if (id) created++;
-          } catch {}
+          } catch { }
         }
       });
     } catch (error) {

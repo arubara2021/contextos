@@ -168,7 +168,7 @@ function computeMemoryConnectivity(
   const avgConfidence =
     connections.length > 0
       ? connections.reduce((sum, c) => sum + clampUnit(c.confidence), 0) /
-        connections.length
+      connections.length
       : 0;
 
   const score =
@@ -359,9 +359,9 @@ router.get("/stats", authMiddleware, async (req: AuthenticatedRequest, res: Resp
       bucketStore.countByCategory(req.userId),
       bucketStore.countByType(req.userId),
       bucketStore.getTotalCount(req.userId),
-      relationshipStore.getTotalCount(),
-      rawStore.getTotalMessages(),
-      rawStore.getTotalSessions(),
+      relationshipStore.getTotalCount(req.userId),
+      rawStore.getTotalMessages(req.userId),
+      rawStore.getTotalSessions(req.userId),
     ]);
 
     const averageStrength = await strengthTracker.bulkStatus();

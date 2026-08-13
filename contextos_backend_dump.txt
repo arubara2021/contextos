@@ -1,1631 +1,2753 @@
 ================================================================================
 CONTEXTOS BACKEND CODE DUMP
 ================================================================================
-Total files: 7
+Total files: 3
 ================================================================================
 
 
 ================================================================================
-FILE: vercel.json
+FILE: src/storage/relationship-store.ts
 ================================================================================
 
-{
-    "rewrites": [
-        {
-            "source": "/api/(.*)",
-            "destination": "/api"
-        }
-    ],
-    "functions": {
-        "api/index.ts": {
-            "maxDuration": 60
-        }
-    }
-}
-
-
-================================================================================
-FILE: package.json
-================================================================================
-
-{
-  "name": "contextos-backend",
-  "version": "1.0.0",
-  "description": "ContextOS - Persistent memory layer for LLM conversations",
-  "main": "dist/index.js",
-  "private": true,
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "test": "jest --forceExit --detectOpenHandles",
-    "test:coverage": "jest --coverage --forceExit --detectOpenHandles",
-    "test:watch": "jest --watch",
-    "lint": "eslint src/ tests/",
-    "lint:fix": "eslint src/ tests/ --fix",
-    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
-    "init-db": "ts-node src/scripts/init-db.ts",
-    "seed-demo": "ts-node src/scripts/seed-demo.ts",
-    "decay-scan": "ts-node src/scripts/run-decay-scan.ts",
-    "export-memories": "ts-node src/scripts/export-memories.ts",
-    "import-conversations": "ts-node src/scripts/import-conversations.ts"
-  },
-  "dependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.600.0",
-    "@aws-sdk/client-s3": "^3.1086.0",
-    "@aws-sdk/s3-request-presigner": "^3.1086.0",
-    "@vercel/functions": "^1.5.0",
-    "bcrypt": "^5.1.1",
-    "compromise": "^14.16.0",
-    "cors": "^2.8.5",
-    "dotenv": "^17.4.2",
-    "express": "^4.19.2",
-    "helmet": "^7.1.0",
-    "jsonwebtoken": "^9.0.2",
-    "mammoth": "^1.12.0",
-    "multer": "^2.2.0",
-    "pdf-parse": "^1.1.1",
-    "pdfjs-dist": "^6.1.200",
-    "pg": "^8.12.0",
-    "uuid": "^10.0.0",
-    "winston": "^3.13.1",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@types/bcrypt": "^5.0.2",
-    "@types/cors": "^2.8.17",
-    "@types/express": "^4.17.21",
-    "@types/jest": "^29.5.12",
-    "@types/jsonwebtoken": "^9.0.6",
-    "@types/multer": "^2.2.0",
-    "@types/node": "^20.14.10",
-    "@types/pdf-parse": "^1.1.5",
-    "@types/pg": "^8.11.6",
-    "@types/supertest": "^7.2.1",
-    "@types/uuid": "^10.0.0",
-    "jest": "^29.7.0",
-    "supertest": "^7.2.2",
-    "ts-jest": "^29.2.2",
-    "ts-node": "^10.9.2",
-    "ts-node-dev": "^2.0.0",
-    "typescript": "^5.5.3"
-  },
-  "engines": {
-    "node": ">=20.0.0"
-  }
-}
-
-
-================================================================================
-FILE: api/index.ts
-================================================================================
-
-import app from "../src/app";
-import { initializeDependencies } from "../src/api/dependencies";
-import { initPool, initDatabase } from "../src/database";
-
-export const config = {
-    maxDuration: 60,
-};
-
-let ready: Promise<void> | null = null;
-
-function ensureReady(): Promise<void> {
-    if (!ready) {
-        ready = (async () => {
-            initPool();
-            await initDatabase();
-            initializeDependencies();
-        })();
-    }
-    return ready;
-}
-
-void ensureReady();
-
-export default async function handler(req: any, res: any) {
-    try {
-        await ensureReady();
-        return app(req, res);
-    } catch (error) {
-        return res.status(503).json({
-            error: "Service unavailable",
-            message: (error as Error).message,
-        });
-    }
-}
-
-
-================================================================================
-FILE: src/config.ts
-================================================================================
-
-import "dotenv/config";
-import { z } from "zod";
-
-function normalizeProviderName(value: string): string {
-  const raw = String(value ?? "")
-    .toLowerCase()
-    .trim();
-
-  if (!raw) return "";
-
-  if (raw === "gemini" || raw === "googleai" || raw === "google-ai") {
-    return "google";
-  }
-
-  if (raw === "nim" || raw === "nvidia-nim" || raw === "nvidianim") {
-    return "nvidia";
-  }
-
-  if (raw === "samba" || raw === "samba-nova") {
-    return "sambanova";
-  }
-
-  return raw;
-}
-
-const envSchema = z.object({
-  NODE_ENV: z
-    .enum(["development", "production", "staging", "test"])
-    .default("development"),
-  PORT: z.coerce.number().default(3001),
-
-  COCKROACH_CONNECTION_STRING: z
-    .string()
-    .default("postgresql://root@localhost:26257/contextos?sslmode=disable"),
-
-  JWT_SECRET: z
-    .string()
-    .min(32)
-    .default("dev-jwt-secret-key-at-least-32-chars-long-for-local"),
-  JWT_EXPIRES_IN: z.string().default("24h"),
-  JWT_REFRESH_EXPIRES_IN: z.string().default("7d"),
-
-  DEV_BYPASS_AUTH: z
-    .string()
-    .default("false")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  DEV_BYPASS_TOKEN: z.string().default("dev-bypass-token"),
-  DEV_BYPASS_EMAIL: z.string().default("demo@contextos.local"),
-
-  AWS_REGION: z.string().default("us-east-1"),
-  AWS_ACCESS_KEY_ID: z.string().default(""),
-  AWS_SECRET_ACCESS_KEY: z.string().default(""),
-
-  S3_BUCKET_NAME: z.string().default("contextos-dev"),
-
-  BEDROCK_ENABLED: z
-    .string()
-    .default("true")
-    .transform((v) => v.toLowerCase().trim() !== "false"),
-  BEDROCK_REGION: z.string().default("us-east-1"),
-  BEDROCK_MODEL_ID: z.string().default("anthropic.claude-3-5-sonnet-20241022-v2:0"),
-  BEDROCK_EMBEDDING_MODEL_ID: z
-    .string()
-    .default("amazon.titan-embed-text-v2:0"),
-  BEDROCK_EXTRACTION_MODEL_ID: z.string().default(""),
-  BEDROCK_REQUEST_TIMEOUT_MS: z.coerce.number().default(90000),
-  BEDROCK_MAX_TOKENS: z.coerce.number().default(4096),
-  BEDROCK_EXTRACTION_MAX_TOKENS: z.coerce.number().default(4096),
-  BEDROCK_EXTRACTION_TEMPERATURE: z.coerce.number().default(0.2),
-
-  AI_DEFAULT_PROVIDER: z.string().default(""),
-  AI_FALLBACK_PROVIDERS: z
-    .string()
-    .default("sambanova,mistral,groq,nvidia,bedrock")
-    .transform((v) =>
-      v
-        .split(",")
-        .map((s) => normalizeProviderName(s))
-        .filter(Boolean)
-    ),
-  AI_STRICT_MODE: z
-    .string()
-    .default("false")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  AI_CHAT_MODEL: z.string().default(""),
-  AI_EXTRACTION_MODEL: z.string().default(""),
-  AI_EMBEDDING_MODEL: z.string().default(""),
-  AI_REQUEST_TIMEOUT_MS: z.coerce.number().default(90000),
-  AI_MAX_RETRIES: z.coerce.number().default(1),
-  AI_RETRY_DELAY_MS: z.coerce.number().default(700),
-  AI_PROVIDER_COOLDOWN_MS: z.coerce.number().default(45000),
-  AI_MIN_CONCEPTS_TINY: z.coerce.number().default(1),
-  AI_MIN_CONCEPTS_SMALL: z.coerce.number().default(3),
-  AI_MIN_CONCEPTS_LARGE: z.coerce.number().default(10),
-  AI_LARGE_DOCUMENT_WORDS: z.coerce.number().default(3000),
-
-  OPENAI_API_KEY: z.string().default(""),
-  OPENAI_BASE_URL: z.string().default("https://api.openai.com/v1"),
-
-  GOOGLE_ENABLED: z
-    .string()
-    .default("true")
-    .transform((v) => v.toLowerCase().trim() !== "false"),
-  GOOGLE_API_KEY: z.string().default(""),
-  GOOGLE_BASE_URL: z
-    .string()
-    .default("https://generativelanguage.googleapis.com"),
-  GOOGLE_CHAT_MODEL: z.string().default("gemini-2.5-flash"),
-  GOOGLE_EXTRACTION_MODEL: z.string().default(""),
-  GOOGLE_EMBEDDING_MODEL: z.string().default(""),
-  GOOGLE_EMBEDDING_DIMENSION: z.coerce.number().default(1024),
-  GOOGLE_JSON_MODE: z
-    .string()
-    .default("true")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  GOOGLE_TIMEOUT_MS: z.coerce.number().default(90000),
-  GOOGLE_MAX_RETRIES: z.coerce.number().default(1),
-  GOOGLE_RETRY_DELAY_MS: z.coerce.number().default(700),
-
-  GROQ_ENABLED: z
-    .string()
-    .default("true")
-    .transform((v) => v.toLowerCase().trim() !== "false"),
-  GROQ_API_KEY: z.string().default(""),
-  GROQ_BASE_URL: z.string().default("https://api.groq.com/openai/v1"),
-  GROQ_CHAT_MODEL: z.string().default("llama-3.3-70b-versatile"),
-  GROQ_EXTRACTION_MODEL: z.string().default(""),
-  GROQ_EMBEDDING_MODEL: z.string().default(""),
-  GROQ_EMBEDDING_DIMENSION: z.coerce.number().default(1024),
-  GROQ_JSON_MODE: z
-    .string()
-    .default("false")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  GROQ_TIMEOUT_MS: z.coerce.number().default(90000),
-  GROQ_MAX_RETRIES: z.coerce.number().default(1),
-  GROQ_RETRY_DELAY_MS: z.coerce.number().default(700),
-
-  SAMBANOVA_ENABLED: z
-    .string()
-    .default("true")
-    .transform((v) => v.toLowerCase().trim() !== "false"),
-  SAMBANOVA_API_KEY: z.string().default(""),
-  SAMBANOVA_BASE_URL: z.string().default("https://api.sambanova.ai/v1"),
-  SAMBANOVA_CHAT_MODEL: z.string().default("Meta-Llama-3.3-70B-Instruct"),
-  SAMBANOVA_EXTRACTION_MODEL: z.string().default(""),
-  SAMBANOVA_EMBEDDING_MODEL: z.string().default(""),
-  SAMBANOVA_EMBEDDING_DIMENSION: z.coerce.number().default(1024),
-  SAMBANOVA_JSON_MODE: z
-    .string()
-    .default("false")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  SAMBANOVA_TIMEOUT_MS: z.coerce.number().default(90000),
-  SAMBANOVA_MAX_RETRIES: z.coerce.number().default(1),
-  SAMBANOVA_RETRY_DELAY_MS: z.coerce.number().default(700),
-
-  MISTRAL_ENABLED: z
-    .string()
-    .default("true")
-    .transform((v) => v.toLowerCase().trim() !== "false"),
-  MISTRAL_API_KEY: z.string().default(""),
-  MISTRAL_BASE_URL: z.string().default("https://api.mistral.ai/v1"),
-  MISTRAL_CHAT_MODEL: z.string().default("mistral-small-latest"),
-  MISTRAL_EXTRACTION_MODEL: z.string().default(""),
-  MISTRAL_EMBEDDING_MODEL: z.string().default("mistral-embed"),
-  MISTRAL_EMBEDDING_DIMENSION: z.coerce.number().default(1024),
-  MISTRAL_JSON_MODE: z
-    .string()
-    .default("false")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  MISTRAL_TIMEOUT_MS: z.coerce.number().default(90000),
-  MISTRAL_MAX_RETRIES: z.coerce.number().default(1),
-  MISTRAL_RETRY_DELAY_MS: z.coerce.number().default(700),
-
-  NVIDIA_ENABLED: z
-    .string()
-    .default("true")
-    .transform((v) => v.toLowerCase().trim() !== "false"),
-  NVIDIA_NIM_API_KEY: z.string().default(""),
-  NVIDIA_API_KEY: z.string().default(""),
-  NVIDIA_BASE_URL: z.string().default("https://integrate.api.nvidia.com/v1"),
-  NVIDIA_CHAT_MODEL: z.string().default("meta/llama-3.3-70b-instruct"),
-  NVIDIA_EXTRACTION_MODEL: z.string().default(""),
-  NVIDIA_EMBEDDING_MODEL: z.string().default(""),
-  NVIDIA_EMBEDDING_DIMENSION: z.coerce.number().default(1024),
-  NVIDIA_JSON_MODE: z
-    .string()
-    .default("false")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  NVIDIA_TIMEOUT_MS: z.coerce.number().default(90000),
-  NVIDIA_MAX_RETRIES: z.coerce.number().default(1),
-  NVIDIA_RETRY_DELAY_MS: z.coerce.number().default(700),
-
-  OLLAMA_ENABLED: z
-    .string()
-    .default("false")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  OLLAMA_BASE_URL: z.string().default("http://localhost:11434"),
-  OLLAMA_CHAT_MODEL: z.string().default("llama3.2:3b"),
-  OLLAMA_EMBEDDING_MODEL: z.string().default("mxbai-embed-large"),
-
-  EMBEDDING_DIMENSION: z.coerce.number().default(1024),
-  EMBEDDING_CONCURRENCY: z.coerce.number().default(4),
-  EMBEDDING_TEXT_MAX_LENGTH: z.coerce.number().default(8000),
-
-  MAX_CONTEXT_MEMORIES: z.coerce.number().default(20),
-  MIN_CHUNK_TOKENS: z.coerce.number().default(150),
-  MAX_CHUNK_TOKENS: z.coerce.number().default(250),
-  MAX_DOCUMENT_TOKENS_SINGLE_CALL: z.coerce.number().default(200000),
-  MAX_CONCEPTS_PER_DOCUMENT: z.coerce.number().default(80),
-  MIN_CONCEPT_IMPORTANCE: z.coerce.number().default(4),
-
-  EXTRACTION_RETRY_COUNT: z.coerce.number().default(2),
-  EXTRACTION_RETRY_DELAY_MS: z.coerce.number().default(1500),
-  EXTRACTION_EXISTING_MEMORY_LIMIT: z.coerce.number().default(40),
-  EXTRACTION_MAX_RELATED_PER_CONCEPT: z.coerce.number().default(4),
-  EXTRACTION_SECTION_CONCURRENCY: z.coerce.number().default(2),
-  EXTRACTION_SECTION_CHAR_CAP: z.coerce.number().default(8000),
-  EXTRACTION_SINGLE_CALL_CHAR_THRESHOLD: z.coerce.number().default(6000),
-  EXTRACTION_MIN_SECTION_CHARS: z.coerce.number().default(500),
-  EXTRACTION_MAX_SECTIONS: z.coerce.number().default(20),
-  EXTRACTION_MAX_OUTPUT_TOKENS: z.coerce.number().default(4096),
-
-  DEFAULT_DECAY_RATE: z.coerce.number().default(0.15),
-  HIGH_IMPORTANCE_DECAY_RATE: z.coerce.number().default(0.1),
-  LOW_IMPORTANCE_DECAY_RATE: z.coerce.number().default(0.2),
-  STRONG_THRESHOLD: z.coerce.number().default(0.7),
-  FADING_THRESHOLD: z.coerce.number().default(0.4),
-  CRITICAL_THRESHOLD: z.coerce.number().default(0.4),
-  FORGOTTEN_THRESHOLD: z.coerce.number().default(0.1),
-  RETAIN_WEIGHT: z.coerce.number().default(0.7),
-  ACCESS_BOOST_WEIGHT: z.coerce.number().default(0.3),
-
-  BCRYPT_ROUNDS: z.coerce.number().default(12),
-
-  CORS_ORIGIN: z.string().default("*"),
-  CORS_FRONTEND_URL: z.string().default("http://localhost:3000"),
-  LOG_LEVEL: z.enum(["error", "warn", "info", "debug"]).default("info"),
-
-  DB_POOL_MAX: z.coerce.number().default(20),
-  DB_MAX_CONNECTIONS: z.coerce.number().default(20),
-  DB_POOL_IDLE_TIMEOUT_MS: z.coerce.number().default(30000),
-  DB_CONNECTION_TIMEOUT_MS: z.coerce.number().default(20000),
-  DB_STATEMENT_TIMEOUT_MS: z.coerce.number().default(30000),
-
-  SCORER_SEMANTIC_WEIGHT: z.coerce.number().default(0.45),
-  SCORER_STRENGTH_WEIGHT: z.coerce.number().default(0.3),
-  SCORER_RECENCY_WEIGHT: z.coerce.number().default(0.25),
-  SCORER_RECENCY_DECAY_FACTOR: z.coerce.number().default(0.1),
-  SCORER_TIE_BREAK_THRESHOLD: z.coerce.number().default(0.05),
-
-  REMINDER_CHECK_INTERVAL_HOURS: z.coerce.number().default(24),
-  REMINDER_MIN_IMPORTANCE: z.coerce.number().default(7),
-  REMINDER_MAX_TOPICS_SHOWN: z.coerce.number().default(5),
-
-  RELATIONSHIP_CROSS_CHUNK_CONFIDENCE: z.coerce.number().default(0.7),
-  RELATIONSHIP_SIMILARITY_MIN: z.coerce.number().default(0.6),
-  RELATIONSHIP_SIMILARITY_MAX: z.coerce.number().default(0.99),
-
-  CONVERSATION_IDLE_TIMEOUT_MS: z.coerce.number().default(900000),
-
-  CORRELATION_ENABLED: z
-    .string()
-    .default("true")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  CORRELATION_MIN_SIMILARITY: z.coerce.number().default(0.7),
-  CORRELATION_STRONG_SIMILARITY: z.coerce.number().default(0.8),
-  CORRELATION_MAX_LINKS_PER_CONCEPT: z.coerce.number().default(5),
-  CORRELATION_MAX_EDGES_PER_DOCUMENT: z.coerce.number().default(150),
-  CORRELATION_DOCUMENT_TOP_N: z.coerce.number().default(10),
-  CONNECTIVITY_SCORE_WEIGHT: z.coerce.number().default(0.12),
-
-  AI_RELATIONSHIP_TYPING_ENABLED: z
-    .string()
-    .default("false")
-    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
-  AI_RELATIONSHIP_TYPING_MAX_CALLS: z.coerce.number().default(20),
-});
-
-const parsed = envSchema.safeParse(process.env);
-
-if (!parsed.success) {
-  console.error(
-    "Invalid environment variables:",
-    parsed.error.flatten().fieldErrors
-  );
-  process.exit(1);
-}
-
-const env = parsed.data;
-
-function firstNonEmpty(...values: Array<string | undefined | null>): string {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
-    }
-  }
-
-  return "";
-}
-
-function buildModelUri(
-  provider: string,
-  modelId: string,
-  region?: string
-): string {
-  if (!modelId) return "";
-
-  if (provider === "bedrock") {
-    return `bedrock://${modelId}?region=${region || env.BEDROCK_REGION}`;
-  }
-
-  return `${provider}://${modelId}`;
-}
-
-const googleApiKey = firstNonEmpty(env.GOOGLE_API_KEY);
-const groqApiKey = firstNonEmpty(env.GROQ_API_KEY);
-const sambanovaApiKey = firstNonEmpty(env.SAMBANOVA_API_KEY);
-const mistralApiKey = firstNonEmpty(env.MISTRAL_API_KEY);
-const nvidiaApiKey = firstNonEmpty(env.NVIDIA_NIM_API_KEY, env.NVIDIA_API_KEY);
-const bedrockHasKeys = Boolean(
-  env.AWS_ACCESS_KEY_ID && env.AWS_SECRET_ACCESS_KEY
-);
-
-const googleChatModel = firstNonEmpty(env.GOOGLE_CHAT_MODEL, "gemini-2.5-flash");
-const googleExtractionModel = firstNonEmpty(
-  env.GOOGLE_EXTRACTION_MODEL,
-  googleChatModel
-);
-const googleEmbeddingModel = firstNonEmpty(env.GOOGLE_EMBEDDING_MODEL);
-
-const groqChatModel = firstNonEmpty(
-  env.GROQ_CHAT_MODEL,
-  "llama-3.3-70b-versatile"
-);
-const groqExtractionModel = firstNonEmpty(env.GROQ_EXTRACTION_MODEL, groqChatModel);
-const groqEmbeddingModel = firstNonEmpty(env.GROQ_EMBEDDING_MODEL);
-
-const sambanovaChatModel = firstNonEmpty(
-  env.SAMBANOVA_CHAT_MODEL,
-  "Meta-Llama-3.3-70B-Instruct"
-);
-const sambanovaExtractionModel = firstNonEmpty(
-  env.SAMBANOVA_EXTRACTION_MODEL,
-  sambanovaChatModel
-);
-const sambanovaEmbeddingModel = firstNonEmpty(env.SAMBANOVA_EMBEDDING_MODEL);
-
-const mistralChatModel = firstNonEmpty(
-  env.MISTRAL_CHAT_MODEL,
-  "mistral-small-latest"
-);
-const mistralExtractionModel = firstNonEmpty(
-  env.MISTRAL_EXTRACTION_MODEL,
-  mistralChatModel
-);
-const mistralEmbeddingModel = firstNonEmpty(
-  env.MISTRAL_EMBEDDING_MODEL,
-  "mistral-embed"
-);
-
-const nvidiaChatModel = firstNonEmpty(
-  env.NVIDIA_CHAT_MODEL,
-  "meta/llama-3.3-70b-instruct"
-);
-const nvidiaExtractionModel = firstNonEmpty(
-  env.NVIDIA_EXTRACTION_MODEL,
-  nvidiaChatModel
-);
-const nvidiaEmbeddingModel = firstNonEmpty(env.NVIDIA_EMBEDDING_MODEL);
-
-const bedrockChatModelId = firstNonEmpty(
-  env.BEDROCK_MODEL_ID,
-  "anthropic.claude-3-5-sonnet-20241022-v2:0"
-);
-const bedrockExtractionModelId = firstNonEmpty(
-  env.BEDROCK_EXTRACTION_MODEL_ID,
-  bedrockChatModelId
-);
-const bedrockEmbeddingModelId = firstNonEmpty(
-  env.BEDROCK_EMBEDDING_MODEL_ID,
-  "amazon.titan-embed-text-v2:0"
-);
-
-const providerDefinitions = {
-  bedrock: {
-    name: "bedrock",
-    enabled: env.BEDROCK_ENABLED && bedrockHasKeys,
-    region: env.BEDROCK_REGION,
-    modelId: bedrockChatModelId,
-    extractionModelId: bedrockExtractionModelId,
-    embeddingModelId: bedrockEmbeddingModelId,
-    embeddingDimensions: env.EMBEDDING_DIMENSION,
-    timeoutMs: env.BEDROCK_REQUEST_TIMEOUT_MS,
-    maxRetries: env.AI_MAX_RETRIES,
-    retryDelayMs: env.AI_RETRY_DELAY_MS,
-    supportsJsonMode: false,
-    supportsEmbeddings: Boolean(bedrockEmbeddingModelId),
-  },
-  google: {
-    name: "google",
-    enabled: env.GOOGLE_ENABLED && googleApiKey.length > 0,
-    apiKey: googleApiKey,
-    baseUrl: env.GOOGLE_BASE_URL,
-    chatModel: googleChatModel,
-    extractionModel: googleExtractionModel,
-    embeddingModel: googleEmbeddingModel,
-    embeddingDimensions: env.GOOGLE_EMBEDDING_DIMENSION,
-    timeoutMs: env.GOOGLE_TIMEOUT_MS,
-    maxRetries: env.GOOGLE_MAX_RETRIES,
-    retryDelayMs: env.GOOGLE_RETRY_DELAY_MS,
-    supportsJsonMode: env.GOOGLE_JSON_MODE,
-    supportsEmbeddings: googleEmbeddingModel.length > 0,
-  },
-  groq: {
-    name: "groq",
-    enabled: env.GROQ_ENABLED && groqApiKey.length > 0,
-    apiKey: groqApiKey,
-    baseUrl: env.GROQ_BASE_URL,
-    chatModel: groqChatModel,
-    extractionModel: groqExtractionModel,
-    embeddingModel: groqEmbeddingModel,
-    embeddingDimensions: env.GROQ_EMBEDDING_DIMENSION,
-    timeoutMs: env.GROQ_TIMEOUT_MS,
-    maxRetries: env.GROQ_MAX_RETRIES,
-    retryDelayMs: env.GROQ_RETRY_DELAY_MS,
-    supportsJsonMode: env.GROQ_JSON_MODE,
-    supportsEmbeddings: groqEmbeddingModel.length > 0,
-  },
-  sambanova: {
-    name: "sambanova",
-    enabled: env.SAMBANOVA_ENABLED && sambanovaApiKey.length > 0,
-    apiKey: sambanovaApiKey,
-    baseUrl: env.SAMBANOVA_BASE_URL,
-    chatModel: sambanovaChatModel,
-    extractionModel: sambanovaExtractionModel,
-    embeddingModel: sambanovaEmbeddingModel,
-    embeddingDimensions: env.SAMBANOVA_EMBEDDING_DIMENSION,
-    timeoutMs: env.SAMBANOVA_TIMEOUT_MS,
-    maxRetries: env.SAMBANOVA_MAX_RETRIES,
-    retryDelayMs: env.SAMBANOVA_RETRY_DELAY_MS,
-    supportsJsonMode: env.SAMBANOVA_JSON_MODE,
-    supportsEmbeddings: sambanovaEmbeddingModel.length > 0,
-  },
-  mistral: {
-    name: "mistral",
-    enabled: env.MISTRAL_ENABLED && mistralApiKey.length > 0,
-    apiKey: mistralApiKey,
-    baseUrl: env.MISTRAL_BASE_URL,
-    chatModel: mistralChatModel,
-    extractionModel: mistralExtractionModel,
-    embeddingModel: mistralEmbeddingModel,
-    embeddingDimensions: env.MISTRAL_EMBEDDING_DIMENSION,
-    timeoutMs: env.MISTRAL_TIMEOUT_MS,
-    maxRetries: env.MISTRAL_MAX_RETRIES,
-    retryDelayMs: env.MISTRAL_RETRY_DELAY_MS,
-    supportsJsonMode: env.MISTRAL_JSON_MODE,
-    supportsEmbeddings: mistralEmbeddingModel.length > 0,
-  },
-  nvidia: {
-    name: "nvidia",
-    enabled: env.NVIDIA_ENABLED && nvidiaApiKey.length > 0,
-    apiKey: nvidiaApiKey,
-    baseUrl: env.NVIDIA_BASE_URL,
-    chatModel: nvidiaChatModel,
-    extractionModel: nvidiaExtractionModel,
-    embeddingModel: nvidiaEmbeddingModel,
-    embeddingDimensions: env.NVIDIA_EMBEDDING_DIMENSION,
-    timeoutMs: env.NVIDIA_TIMEOUT_MS,
-    maxRetries: env.NVIDIA_MAX_RETRIES,
-    retryDelayMs: env.NVIDIA_RETRY_DELAY_MS,
-    supportsJsonMode: env.NVIDIA_JSON_MODE,
-    supportsEmbeddings: nvidiaEmbeddingModel.length > 0,
-  },
-  ollama: {
-    name: "ollama",
-    enabled: env.OLLAMA_ENABLED,
-    baseUrl: env.OLLAMA_BASE_URL,
-    chatModel: env.OLLAMA_CHAT_MODEL,
-    extractionModel: env.OLLAMA_CHAT_MODEL,
-    embeddingModel: env.OLLAMA_EMBEDDING_MODEL,
-    embeddingDimensions: env.EMBEDDING_DIMENSION,
-    timeoutMs: env.AI_REQUEST_TIMEOUT_MS,
-    maxRetries: env.AI_MAX_RETRIES,
-    retryDelayMs: env.AI_RETRY_DELAY_MS,
-    supportsJsonMode: false,
-    supportsEmbeddings: env.OLLAMA_EMBEDDING_MODEL.length > 0,
-  },
-  openai: {
-    name: "openai",
-    enabled: env.OPENAI_API_KEY.length > 0,
-    apiKey: env.OPENAI_API_KEY,
-    baseUrl: env.OPENAI_BASE_URL,
-    chatModel: "",
-    extractionModel: "",
-    embeddingModel: "",
-    embeddingDimensions: env.EMBEDDING_DIMENSION,
-    timeoutMs: env.AI_REQUEST_TIMEOUT_MS,
-    maxRetries: env.AI_MAX_RETRIES,
-    retryDelayMs: env.AI_RETRY_DELAY_MS,
-    supportsJsonMode: false,
-    supportsEmbeddings: false,
-  },
-};
-
-const preferredProviderOrder = [
-  "google",
-  "sambanova",
-  "mistral",
-  "groq",
-  "nvidia",
-  "bedrock",
-  "ollama",
-];
-
-const availableProviders = preferredProviderOrder.filter(
-  (name) => (providerDefinitions as any)[name]?.enabled
-);
-
-const requestedDefault = normalizeProviderName(env.AI_DEFAULT_PROVIDER);
-
-const defaultProvider =
-  requestedDefault && availableProviders.includes(requestedDefault)
-    ? requestedDefault
-    : availableProviders[0] ?? "bedrock";
-
-const requestedFallbacks = env.AI_FALLBACK_PROVIDERS.filter(
-  (name) => availableProviders.includes(name) && name !== defaultProvider
-);
-
-const fallbackProviders =
-  requestedFallbacks.length > 0
-    ? requestedFallbacks
-    : availableProviders.filter((name) => name !== defaultProvider);
-
-function providerChatModel(provider: string): string {
-  switch (provider) {
-    case "bedrock":
-      return bedrockChatModelId;
-    case "google":
-      return googleChatModel;
-    case "groq":
-      return groqChatModel;
-    case "sambanova":
-      return sambanovaChatModel;
-    case "mistral":
-      return mistralChatModel;
-    case "nvidia":
-      return nvidiaChatModel;
-    case "ollama":
-      return env.OLLAMA_CHAT_MODEL;
-    default:
-      return "";
-  }
-}
-
-function providerExtractionModel(provider: string): string {
-  switch (provider) {
-    case "bedrock":
-      return bedrockExtractionModelId;
-    case "google":
-      return googleExtractionModel;
-    case "groq":
-      return groqExtractionModel;
-    case "sambanova":
-      return sambanovaExtractionModel;
-    case "mistral":
-      return mistralExtractionModel;
-    case "nvidia":
-      return nvidiaExtractionModel;
-    case "ollama":
-      return env.OLLAMA_CHAT_MODEL;
-    default:
-      return "";
-  }
-}
-
-function providerEmbeddingModel(provider: string): string {
-  switch (provider) {
-    case "bedrock":
-      return bedrockEmbeddingModelId;
-    case "google":
-      return googleEmbeddingModel;
-    case "groq":
-      return groqEmbeddingModel;
-    case "sambanova":
-      return sambanovaEmbeddingModel;
-    case "mistral":
-      return mistralEmbeddingModel;
-    case "nvidia":
-      return nvidiaEmbeddingModel;
-    case "ollama":
-      return env.OLLAMA_EMBEDDING_MODEL;
-    default:
-      return "";
-  }
-}
-
-function firstAvailableModel(task: "chat" | "extraction" | "embedding"): string {
-  for (const provider of availableProviders) {
-    const modelId =
-      task === "chat"
-        ? providerChatModel(provider)
-        : task === "extraction"
-        ? providerExtractionModel(provider)
-        : providerEmbeddingModel(provider);
-
-    if (modelId) {
-      return buildModelUri(
-        provider,
-        modelId,
-        provider === "bedrock" ? env.BEDROCK_REGION : undefined
-      );
-    }
-  }
-
-  return "";
-}
-
-const chatModel =
-  env.AI_CHAT_MODEL ||
-  firstAvailableModel("chat") ||
-  buildModelUri("bedrock", bedrockChatModelId, env.BEDROCK_REGION);
-
-const extractionModel =
-  env.AI_EXTRACTION_MODEL ||
-  firstAvailableModel("extraction") ||
-  chatModel;
-
-let embeddingModel = env.AI_EMBEDDING_MODEL || firstAvailableModel("embedding");
-
-if (!embeddingModel) {
-  embeddingModel = buildModelUri(
-    "bedrock",
-    bedrockEmbeddingModelId,
-    env.BEDROCK_REGION
-  );
-}
-
-const config = {
-  server: {
-    nodeEnv: env.NODE_ENV,
-    port: env.PORT,
-    isProduction: env.NODE_ENV === "production",
-    isDevelopment: env.NODE_ENV === "development",
-    corsOrigin: env.CORS_ORIGIN,
-  },
-
-  cockroach: {
-    connectionString: env.COCKROACH_CONNECTION_STRING,
-    poolMax: env.DB_POOL_MAX,
-    maxConnections: env.DB_MAX_CONNECTIONS,
-    idleTimeoutMs: env.DB_POOL_IDLE_TIMEOUT_MS,
-    connectionTimeoutMs: env.DB_CONNECTION_TIMEOUT_MS,
-    statementTimeoutMs: env.DB_STATEMENT_TIMEOUT_MS,
-  },
-
-  bedrock: {
-    enabled: env.BEDROCK_ENABLED && bedrockHasKeys,
-    region: env.BEDROCK_REGION,
-    modelId: bedrockChatModelId,
-    extractionModelId: bedrockExtractionModelId,
-    embeddingModelId: bedrockEmbeddingModelId,
-    requestTimeoutMs: env.BEDROCK_REQUEST_TIMEOUT_MS,
-    maxTokens: env.BEDROCK_MAX_TOKENS,
-  },
-
-  aws: {
-    region: env.AWS_REGION,
-    accessKeyId: env.AWS_ACCESS_KEY_ID,
-    secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
-  },
-
-  s3: {
-    bucketName: env.S3_BUCKET_NAME,
-  },
-
-  ai: {
-    defaultProvider,
-    fallbackProviders,
-    strictMode: env.AI_STRICT_MODE,
-    requestTimeoutMs: env.AI_REQUEST_TIMEOUT_MS,
-    maxRetries: env.AI_MAX_RETRIES,
-    retryDelayMs: env.AI_RETRY_DELAY_MS,
-    providerCooldownMs: env.AI_PROVIDER_COOLDOWN_MS,
-    minConceptsTiny: env.AI_MIN_CONCEPTS_TINY,
-    minConceptsSmall: env.AI_MIN_CONCEPTS_SMALL,
-    minConceptsLarge: env.AI_MIN_CONCEPTS_LARGE,
-    largeDocumentWords: env.AI_LARGE_DOCUMENT_WORDS,
-
-    models: {
-      chat: chatModel,
-      extraction: extractionModel,
-      embedding: embeddingModel,
-    },
-
-    providers: providerDefinitions,
-  },
-
-  memory: {
-    maxContextMemories: env.MAX_CONTEXT_MEMORIES,
-    chunkTargetMin: env.MIN_CHUNK_TOKENS,
-    chunkTargetMax: env.MAX_CHUNK_TOKENS,
-    defaultDecayRate: env.DEFAULT_DECAY_RATE,
-    strongThreshold: env.STRONG_THRESHOLD,
-    fadingThreshold: env.FADING_THRESHOLD,
-    criticalThreshold: env.CRITICAL_THRESHOLD,
-    forgottenThreshold: env.FORGOTTEN_THRESHOLD,
-  },
-
-  decay: {
-    defaultRate: env.DEFAULT_DECAY_RATE,
-    highImportanceRate: env.HIGH_IMPORTANCE_DECAY_RATE,
-    lowImportanceRate: env.LOW_IMPORTANCE_DECAY_RATE,
-    strongThreshold: env.STRONG_THRESHOLD,
-    fadingThreshold: env.FADING_THRESHOLD,
-    criticalThreshold: env.CRITICAL_THRESHOLD,
-    forgottenThreshold: env.FORGOTTEN_THRESHOLD,
-    retainWeight: env.RETAIN_WEIGHT,
-    accessBoostWeight: env.ACCESS_BOOST_WEIGHT,
-  },
-
-  embedding: {
-    dimension: env.EMBEDDING_DIMENSION,
-    concurrency: env.EMBEDDING_CONCURRENCY,
-    textMaxLength: env.EMBEDDING_TEXT_MAX_LENGTH,
-  },
-
-  extraction: {
-    modelId: bedrockExtractionModelId,
-    maxTokens: env.EXTRACTION_MAX_OUTPUT_TOKENS || env.BEDROCK_EXTRACTION_MAX_TOKENS,
-    temperature: env.BEDROCK_EXTRACTION_TEMPERATURE,
-    embeddingConcurrency: env.EMBEDDING_CONCURRENCY,
-    maxDocumentTokens: env.MAX_DOCUMENT_TOKENS_SINGLE_CALL,
-    maxConceptsPerDocument: env.MAX_CONCEPTS_PER_DOCUMENT,
-    minConceptImportance: env.MIN_CONCEPT_IMPORTANCE,
-    retryCount: env.EXTRACTION_RETRY_COUNT,
-    retryDelayMs: env.EXTRACTION_RETRY_DELAY_MS,
-    existingMemoryLimit: env.EXTRACTION_EXISTING_MEMORY_LIMIT,
-    maxRelatedPerConcept: env.EXTRACTION_MAX_RELATED_PER_CONCEPT,
-    sectionConcurrency: env.EXTRACTION_SECTION_CONCURRENCY,
-    sectionCharCap: env.EXTRACTION_SECTION_CHAR_CAP,
-    singleCallCharThreshold: env.EXTRACTION_SINGLE_CALL_CHAR_THRESHOLD,
-    minSectionChars: env.EXTRACTION_MIN_SECTION_CHARS,
-    maxSections: env.EXTRACTION_MAX_SECTIONS,
-  },
-
-  auth: {
-    bcryptRounds: env.BCRYPT_ROUNDS,
-    jwtSecret: env.JWT_SECRET,
-    jwtExpiresIn: env.JWT_EXPIRES_IN,
-    jwtRefreshExpiresIn: env.JWT_REFRESH_EXPIRES_IN,
-    devBypassAuth: env.DEV_BYPASS_AUTH,
-    devBypassToken: env.DEV_BYPASS_TOKEN,
-    devBypassEmail: env.DEV_BYPASS_EMAIL,
-  },
-
-  cors: {
-    origin: env.CORS_ORIGIN,
-    frontendUrl: env.CORS_FRONTEND_URL,
-  },
-
-  scorer: {
-    semanticWeight: env.SCORER_SEMANTIC_WEIGHT,
-    strengthWeight: env.SCORER_STRENGTH_WEIGHT,
-    recencyWeight: env.SCORER_RECENCY_WEIGHT,
-    recencyDecayFactor: env.SCORER_RECENCY_DECAY_FACTOR,
-    tieBreakThreshold: env.SCORER_TIE_BREAK_THRESHOLD,
-    connectivityWeight: env.CONNECTIVITY_SCORE_WEIGHT,
-  },
-
-  reminder: {
-    checkIntervalHours: env.REMINDER_CHECK_INTERVAL_HOURS,
-    minImportance: env.REMINDER_MIN_IMPORTANCE,
-    maxTopicsShown: env.REMINDER_MAX_TOPICS_SHOWN,
-  },
-
-  relationship: {
-    crossChunkConfidence: env.RELATIONSHIP_CROSS_CHUNK_CONFIDENCE,
-    similarityMin: env.RELATIONSHIP_SIMILARITY_MIN,
-    similarityMax: env.RELATIONSHIP_SIMILARITY_MAX,
-  },
-
-  correlation: {
-    enabled: env.CORRELATION_ENABLED,
-    minSimilarity: env.CORRELATION_MIN_SIMILARITY,
-    strongSimilarity: env.CORRELATION_STRONG_SIMILARITY,
-    maxLinksPerConcept: env.CORRELATION_MAX_LINKS_PER_CONCEPT,
-    maxEdgesPerDocument: env.CORRELATION_MAX_EDGES_PER_DOCUMENT,
-    documentTopN: env.CORRELATION_DOCUMENT_TOP_N,
-    connectivityScoreWeight: env.CONNECTIVITY_SCORE_WEIGHT,
-    aiRelationshipTypingEnabled: env.AI_RELATIONSHIP_TYPING_ENABLED,
-    aiRelationshipTypingMaxCalls: env.AI_RELATIONSHIP_TYPING_MAX_CALLS,
-  },
-
-  conversation: {
-    idleTimeoutMs: env.CONVERSATION_IDLE_TIMEOUT_MS,
-  },
-
-  logging: {
-    level: env.LOG_LEVEL,
-  },
-};
-
-export default config;
-
-
-================================================================================
-FILE: src/auth/middleware.ts
-================================================================================
-
-import "dotenv/config";
-import { Request, Response, NextFunction } from "express";
-import { verifyToken } from "../auth/tokens";
-import type { TokenPayload } from "../models/user.model";
-import { getUserStore } from "../storage/user-store";
+import { query, queryOne, queryMany, withTransaction } from "../database";
+import {
+  Relationship,
+  RelationshipRow,
+  RelationshipCreateParams,
+  RelationshipWithMeta,
+  RelationshipType,
+  mapRowToRelationship,
+  mapRowToRelationshipWithMeta,
+  validateConfidence,
+  RELATIONSHIP_TYPES,
+} from "../models/relationship.model";
+import { normalizeKey } from "./bucket-store";
 import logger from "../utils/logger";
 
-export interface AuthenticatedRequest extends Request {
-  userId?: string;
-  userEmail?: string;
-  tokenPayload?: TokenPayload;
+export type RelationshipMethod =
+  | "exact"
+  | "vector"
+  | "extraction"
+  | "ai"
+  | "legacy";
+
+export interface RelationshipMetadata {
+  method?: RelationshipMethod;
+  similarity?: number;
+  sourceDocumentId?: string | null;
+  targetDocumentId?: string | null;
+  evidence?: string;
+  updatedAt?: string;
 }
 
-const DEV_BYPASS_AUTH = ["true", "1", "yes"].includes(
-  (process.env.DEV_BYPASS_AUTH ?? "false").toLowerCase().trim()
-);
+type RelationshipCreateParamsExtended = RelationshipCreateParams & {
+  sourceBucketId?: string | null;
+  targetBucketId?: string | null;
+  userId?: string | null;
+  documentId?: string | null;
+  sourceDocumentId?: string | null;
+  targetDocumentId?: string | null;
+  metadata?: RelationshipMetadata;
+};
 
-const DEV_BYPASS_TOKEN = process.env.DEV_BYPASS_TOKEN ?? "dev-bypass-token";
-const DEV_BYPASS_EMAIL = process.env.DEV_BYPASS_EMAIL ?? "demo@contextos.local";
+interface SyncEdgeInput {
+  sourceBucketId?: string | null;
+  targetBucketId?: string | null;
+  sourceLabel?: string;
+  targetLabel?: string;
+  relationType?: RelationshipType;
+  confidence?: number;
+  sourceText?: string | null;
+}
 
-let devUserCache: { userId: string; email: string } | null | undefined = undefined;
+interface SyncFromConceptsInput {
+  userId?: string | null;
+  documentId?: string | null;
+  edges: SyncEdgeInput[];
+}
 
-async function resolveDevUser(): Promise<{ userId: string; email: string } | null> {
-  if (devUserCache) {
-    return devUserCache;
+export interface VectorConnectionEdge {
+  sourceBucketId: string;
+  targetBucketId: string;
+  sourceLabel?: string;
+  targetLabel?: string;
+  confidence: number;
+  similarity?: number;
+  sourceDocumentId?: string | null;
+  targetDocumentId?: string | null;
+  evidence?: string;
+}
+
+interface SyncVectorConnectionsInput {
+  userId: string;
+  documentId?: string | null;
+  edges: VectorConnectionEdge[];
+}
+
+interface ExpandedEdge {
+  sourceBucketId: string;
+  targetBucketId: string;
+  relationType: string;
+  confidence: number;
+}
+
+export interface DocumentLinkInput {
+  targetDocumentId: string;
+  correlationScore: number;
+  sharedBucketCount: number;
+  edgeCount: number;
+  avgConfidence: number;
+}
+
+export interface RelatedDocumentRow {
+  documentId: string;
+  filename: string;
+  correlation: number;
+  sharedConcepts: number;
+  edges: number;
+  avgConfidence: number;
+}
+
+export interface TopConnectedMemoryRow {
+  bucketId: string;
+  label: string;
+  relationType: string;
+  confidence: number;
+  documentId: string | null;
+}
+
+export interface ConnectionStatsRow {
+  exactMerges: number;
+  semanticConnections: number;
+  crossDocumentConnections: number;
+  strongConnections: number;
+  connectionScore: number;
+}
+
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function isValidUuid(value: unknown): value is string {
+  return typeof value === "string" && UUID_REGEX.test(value.trim());
+}
+
+function clampUnit(value: unknown): number {
+  const num = typeof value === "number" ? value : parseFloat(String(value));
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.min(1, num));
+}
+
+function round4(value: unknown): number {
+  const num = typeof value === "number" ? value : parseFloat(String(value));
+  if (!Number.isFinite(num)) return 0;
+  return Math.round(Math.max(0, Math.min(1, num)) * 10000) / 10000;
+}
+
+function nonNegativeInt(value: unknown): number {
+  const num = typeof value === "number" ? value : parseInt(String(value), 10);
+  if (!Number.isFinite(num)) return 0;
+  return Math.max(0, Math.round(num));
+}
+
+function sanitizeMetadata(
+  metadata?: RelationshipMetadata | null
+): RelationshipMetadata | null {
+  if (!metadata) return null;
+  const result: RelationshipMetadata = {};
+  if (metadata.method) {
+    result.method = metadata.method;
   }
+  if (
+    typeof metadata.similarity === "number" &&
+    Number.isFinite(metadata.similarity)
+  ) {
+    result.similarity = clampUnit(metadata.similarity);
+  }
+  if (metadata.sourceDocumentId) {
+    result.sourceDocumentId = metadata.sourceDocumentId;
+  }
+  if (metadata.targetDocumentId) {
+    result.targetDocumentId = metadata.targetDocumentId;
+  }
+  if (metadata.evidence) {
+    result.evidence = String(metadata.evidence).substring(0, 1000);
+  }
+  result.updatedAt = new Date().toISOString();
+  return Object.keys(result).length > 0 ? result : null;
+}
 
-  try {
-    let user = await getUserStore().getUserByEmail(DEV_BYPASS_EMAIL);
-
-    if (!user) {
-      logger.info("Dev bypass: demo user not found, creating...");
-      try {
-        user = await getUserStore().createUser({
-          email: DEV_BYPASS_EMAIL,
-          passwordHash: "dev-bypass-no-login",
-          displayName: "Vera Lindqvist",
-        });
-        logger.info("Dev bypass: demo user created", { userId: user.userId });
-      } catch (createErr) {
-        // User might have been created by a race condition, try again
-        user = await getUserStore().getUserByEmail(DEV_BYPASS_EMAIL);
-        if (!user) {
-          devUserCache = null;
-          logger.error("Dev bypass: failed to create demo user", {
-            error: (createErr as Error).message,
-          });
-          return null;
-        }
-      }
-    }
-
-    devUserCache = {
-      userId: user.userId,
-      email: user.email,
-    };
-
-    logger.info("Dev bypass resolved demo user", {
-      userId: user.userId,
-      email: user.email,
-    });
-
-    return devUserCache;
-  } catch (error) {
-    devUserCache = null;
-    logger.error("Dev bypass user resolution failed", {
-      error: (error as Error).message,
-    });
+function normalizeDocumentLink(
+  link: DocumentLinkInput,
+  sourceDocumentId: string
+): DocumentLinkInput | null {
+  const targetDocumentId = String(link.targetDocumentId ?? "").trim();
+  if (!isValidUuid(targetDocumentId)) {
     return null;
   }
+  if (targetDocumentId === sourceDocumentId) {
+    return null;
+  }
+  const edgeCount = nonNegativeInt(link.edgeCount);
+  const sharedBucketCount = nonNegativeInt(link.sharedBucketCount);
+  if (edgeCount <= 0 && sharedBucketCount <= 0) {
+    return null;
+  }
+  return {
+    targetDocumentId,
+    correlationScore: round4(link.correlationScore),
+    sharedBucketCount,
+    edgeCount,
+    avgConfidence: round4(link.avgConfidence),
+  };
 }
 
-export async function authMiddleware(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader) {
-    res.status(401).json({ error: "Authorization header required" });
-    return;
+export class RelationshipStore {
+  private normalizeRelationType(value: unknown): RelationshipType {
+    if (typeof value !== "string") return "related_to";
+    return (RELATIONSHIP_TYPES as string[]).includes(value)
+      ? (value as RelationshipType)
+      : "related_to";
   }
 
-  const parts = authHeader.split(" ");
-
-  if (parts.length !== 2 || parts[0] !== "Bearer") {
-    res.status(401).json({ error: "Authorization header must be: Bearer <token>" });
-    return;
+  private prepareMetadata(
+    params: RelationshipCreateParamsExtended
+  ): RelationshipMetadata | null {
+    const base: RelationshipMetadata = { ...(params.metadata ?? {}) };
+    if (params.sourceDocumentId) {
+      base.sourceDocumentId = params.sourceDocumentId;
+    }
+    if (params.targetDocumentId) {
+      base.targetDocumentId = params.targetDocumentId;
+    }
+    if (params.documentId && !base.sourceDocumentId) {
+      base.sourceDocumentId = params.documentId;
+    }
+    return sanitizeMetadata(base);
   }
 
-  const token = parts[1];
+  async resolveBucketIdByCanonical(
+    canonical: string,
+    userId?: string | null,
+    documentId?: string | null
+  ): Promise<string | null> {
+    if (!canonical || !canonical.trim()) return null;
+    const normalized = normalizeKey(canonical);
+    try {
+      if (documentId && isValidUuid(documentId)) {
+        const row = await queryOne<{ bucket_id: string }>(
+          `SELECT bucket_id
+           FROM buckets
+           WHERE (canonical = $1 OR normalized = $2)
+           AND document_id = $3::uuid
+           ORDER BY strength DESC, last_accessed DESC
+           LIMIT 1`,
+          [canonical, normalized, documentId]
+        );
+        if (row?.bucket_id) return row.bucket_id;
+      }
 
-  if (!token || token.length === 0) {
-    res.status(401).json({ error: "Token is empty" });
-    return;
-  }
+      if (userId && isValidUuid(userId)) {
+        const userRow = await queryOne<{ bucket_id: string }>(
+          `SELECT bucket_id
+           FROM buckets
+           WHERE (canonical = $1 OR normalized = $2)
+           AND user_id = $3::uuid
+           ORDER BY strength DESC, last_accessed DESC
+           LIMIT 1`,
+          [canonical, normalized, userId]
+        );
+        if (userRow?.bucket_id) return userRow.bucket_id;
 
-  if (DEV_BYPASS_AUTH && token === DEV_BYPASS_TOKEN) {
-    const dev = await resolveDevUser();
+        const nullRow = await queryOne<{ bucket_id: string }>(
+          `SELECT bucket_id
+           FROM buckets
+           WHERE (canonical = $1 OR normalized = $2)
+           AND user_id IS NULL
+           ORDER BY strength DESC, last_accessed DESC
+           LIMIT 1`,
+          [canonical, normalized]
+        );
+        if (nullRow?.bucket_id) return nullRow.bucket_id;
+        return null;
+      }
 
-    if (!dev) {
-      res.status(401).json({
-        error: "Dev bypass enabled but demo user missing",
-        details: `Run: npx ts-node src/scripts/seed-demo.ts (expected email: ${DEV_BYPASS_EMAIL})`,
+      const nullRow = await queryOne<{ bucket_id: string }>(
+        `SELECT bucket_id
+         FROM buckets
+         WHERE (canonical = $1 OR normalized = $2)
+         AND user_id IS NULL
+         ORDER BY strength DESC, last_accessed DESC
+         LIMIT 1`,
+        [canonical, normalized]
+      );
+      if (nullRow?.bucket_id) return nullRow.bucket_id;
+
+      const anyRow = await queryOne<{ bucket_id: string }>(
+        `SELECT bucket_id
+         FROM buckets
+         WHERE canonical = $1 OR normalized = $2
+         ORDER BY strength DESC, last_accessed DESC
+         LIMIT 1`,
+        [canonical, normalized]
+      );
+      return anyRow?.bucket_id ?? null;
+    } catch (error) {
+      logger.error("resolveBucketIdByCanonical failed", {
+        canonical,
+        userId,
+        documentId,
+        error: (error as Error).message,
       });
-      return;
+      return null;
+    }
+  }
+
+  private async resolveBucketUserId(bucketId: string): Promise<string | null> {
+    if (!isValidUuid(bucketId)) return null;
+    try {
+      const row = await queryOne<{ user_id: string | null }>(
+        "SELECT user_id FROM buckets WHERE bucket_id = $1::uuid",
+        [bucketId]
+      );
+      return row?.user_id ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async resolveCanonical(bucketId: string): Promise<string | null> {
+    if (!isValidUuid(bucketId)) return null;
+    try {
+      const row = await queryOne<{ canonical: string }>(
+        "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
+        [bucketId]
+      );
+      return row?.canonical ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  async createRelationship(
+    params: RelationshipCreateParamsExtended
+  ): Promise<string> {
+    try {
+      const relationType = this.normalizeRelationType(params.relationType);
+      const confidence = validateConfidence(params.confidence ?? 0.5);
+
+      let sourceBucketId = params.sourceBucketId ?? null;
+      let targetBucketId = params.targetBucketId ?? null;
+      let userId = params.userId ?? null;
+
+      if (sourceBucketId && !isValidUuid(sourceBucketId)) {
+        sourceBucketId = null;
+      }
+      if (targetBucketId && !isValidUuid(targetBucketId)) {
+        targetBucketId = null;
+      }
+      if (userId && !isValidUuid(userId)) {
+        userId = null;
+      }
+
+      if (!sourceBucketId) {
+        sourceBucketId = await this.resolveBucketIdByCanonical(
+          params.sourceBucket,
+          userId,
+          params.documentId
+        );
+      }
+      if (!targetBucketId) {
+        targetBucketId = await this.resolveBucketIdByCanonical(
+          params.targetBucket,
+          userId,
+          params.documentId
+        );
+      }
+
+      if (!userId && sourceBucketId) {
+        userId = await this.resolveBucketUserId(sourceBucketId);
+      }
+      if (!userId && targetBucketId) {
+        userId = await this.resolveBucketUserId(targetBucketId);
+      }
+
+      let sourceCanonical = params.sourceBucket;
+      let targetCanonical = params.targetBucket;
+
+      if (sourceBucketId && (!sourceCanonical || !sourceCanonical.trim())) {
+        sourceCanonical = (await this.resolveCanonical(sourceBucketId)) ?? "";
+      }
+      if (targetBucketId && (!targetCanonical || !targetCanonical.trim())) {
+        targetCanonical = (await this.resolveCanonical(targetBucketId)) ?? "";
+      }
+
+      if (!sourceCanonical || !targetCanonical) return "";
+      if (normalizeKey(sourceCanonical) === normalizeKey(targetCanonical)) {
+        return "";
+      }
+
+      const metadata = this.prepareMetadata(params);
+      const metadataJson = metadata ? JSON.stringify(metadata) : null;
+
+      if (sourceBucketId && targetBucketId) {
+        const existing = userId
+          ? await queryOne<{ relationship_id: string }>(
+              `SELECT relationship_id
+               FROM relationships
+               WHERE source_bucket_id = $1::uuid
+               AND target_bucket_id = $2::uuid
+               AND relation_type = $3
+               AND (user_id = $4::uuid OR user_id IS NULL)
+               LIMIT 1`,
+              [sourceBucketId, targetBucketId, relationType, userId]
+            )
+          : await queryOne<{ relationship_id: string }>(
+              `SELECT relationship_id
+               FROM relationships
+               WHERE source_bucket_id = $1::uuid
+               AND target_bucket_id = $2::uuid
+               AND relation_type = $3
+               AND user_id IS NULL
+               LIMIT 1`,
+              [sourceBucketId, targetBucketId, relationType]
+            );
+
+        if (existing) {
+          await query(
+            `UPDATE relationships
+             SET confidence = GREATEST(confidence, $1),
+                 source_bucket = $2,
+                 target_bucket = $3,
+                 user_id = COALESCE(user_id, $4::uuid),
+                 source_text = COALESCE($5, source_text),
+                 metadata = COALESCE(metadata, '{}'::jsonb) || COALESCE($6::jsonb, '{}'::jsonb)
+             WHERE relationship_id = $7`,
+            [
+              confidence,
+              sourceCanonical,
+              targetCanonical,
+              userId,
+              params.sourceText ?? null,
+              metadataJson,
+              existing.relationship_id,
+            ]
+          );
+          return existing.relationship_id;
+        }
+
+        const row = await queryOne<{ relationship_id: string }>(
+          `INSERT INTO relationships (
+            source_bucket,
+            target_bucket,
+            relation_type,
+            confidence,
+            source_text,
+            source_bucket_id,
+            target_bucket_id,
+            user_id,
+            metadata
+          )
+          VALUES ($1, $2, $3, $4, $5, $6::uuid, $7::uuid, $8::uuid, $9::jsonb)
+          ON CONFLICT (source_bucket, target_bucket, relation_type)
+          DO UPDATE SET
+            confidence = GREATEST(relationships.confidence, EXCLUDED.confidence),
+            source_bucket_id = COALESCE(relationships.source_bucket_id, EXCLUDED.source_bucket_id),
+            target_bucket_id = COALESCE(relationships.target_bucket_id, EXCLUDED.target_bucket_id),
+            user_id = COALESCE(relationships.user_id, EXCLUDED.user_id),
+            source_text = COALESCE(EXCLUDED.source_text, relationships.source_text),
+            metadata = COALESCE(relationships.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)
+          RETURNING relationship_id`,
+          [
+            sourceCanonical,
+            targetCanonical,
+            relationType,
+            confidence,
+            params.sourceText ?? null,
+            sourceBucketId,
+            targetBucketId,
+            userId,
+            metadataJson,
+          ]
+        );
+        return row?.relationship_id ?? "";
+      }
+
+      const row = await queryOne<{ relationship_id: string }>(
+        `INSERT INTO relationships (
+          source_bucket,
+          target_bucket,
+          relation_type,
+          confidence,
+          source_text,
+          user_id,
+          metadata
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::uuid, $7::jsonb)
+        ON CONFLICT (source_bucket, target_bucket, relation_type)
+        DO UPDATE SET
+          confidence = GREATEST(relationships.confidence, EXCLUDED.confidence),
+          user_id = COALESCE(relationships.user_id, EXCLUDED.user_id),
+          source_text = COALESCE(EXCLUDED.source_text, relationships.source_text),
+          metadata = COALESCE(relationships.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)
+        RETURNING relationship_id`,
+        [
+          sourceCanonical,
+          targetCanonical,
+          relationType,
+          confidence,
+          params.sourceText ?? null,
+          userId,
+          metadataJson,
+        ]
+      );
+      return row?.relationship_id ?? "";
+    } catch (error) {
+      logger.error("createRelationship failed", {
+        source: params.sourceBucket,
+        target: params.targetBucket,
+        type: params.relationType,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async syncFromConcepts(input: SyncFromConceptsInput): Promise<number> {
+    if (!input.edges || input.edges.length === 0) return 0;
+    let stored = 0;
+    const seen = new Set<string>();
+
+    for (const edge of input.edges) {
+      try {
+        let sourceBucketId = edge.sourceBucketId ?? null;
+        let targetBucketId = edge.targetBucketId ?? null;
+
+        if (sourceBucketId && !isValidUuid(sourceBucketId)) {
+          sourceBucketId = null;
+        }
+        if (targetBucketId && !isValidUuid(targetBucketId)) {
+          targetBucketId = null;
+        }
+
+        if (!sourceBucketId && edge.sourceLabel) {
+          sourceBucketId = await this.resolveBucketIdByCanonical(
+            edge.sourceLabel,
+            input.userId,
+            input.documentId
+          );
+        }
+        if (!targetBucketId && edge.targetLabel) {
+          targetBucketId = await this.resolveBucketIdByCanonical(
+            edge.targetLabel,
+            input.userId,
+            input.documentId
+          );
+        }
+
+        if (!sourceBucketId || !targetBucketId) continue;
+        if (sourceBucketId === targetBucketId) continue;
+
+        let userId = input.userId ?? null;
+        if (userId && !isValidUuid(userId)) {
+          userId = null;
+        }
+        if (!userId) {
+          userId =
+            (await this.resolveBucketUserId(sourceBucketId)) ??
+            (await this.resolveBucketUserId(targetBucketId));
+        }
+
+        const sourceCanonical =
+          edge.sourceLabel || (await this.resolveCanonical(sourceBucketId));
+        const targetCanonical =
+          edge.targetLabel || (await this.resolveCanonical(targetBucketId));
+        if (!sourceCanonical || !targetCanonical) continue;
+
+        const relationType = this.normalizeRelationType(edge.relationType);
+        const key = `${userId ?? "null"}:${sourceBucketId}:${targetBucketId}:${relationType}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const relationshipId = await this.createRelationship({
+          sourceBucket: sourceCanonical,
+          targetBucket: targetCanonical,
+          relationType,
+          confidence: edge.confidence ?? 0.65,
+          sourceText: edge.sourceText ?? undefined,
+          sourceBucketId,
+          targetBucketId,
+          userId,
+          documentId: input.documentId ?? null,
+          sourceDocumentId: input.documentId ?? null,
+          metadata: {
+            method: "extraction",
+            sourceDocumentId: input.documentId ?? null,
+            evidence: edge.sourceText ?? undefined,
+          },
+        });
+        if (relationshipId) stored++;
+      } catch {
+        continue;
+      }
+    }
+    return stored;
+  }
+
+  async syncVectorConnections(
+    input: SyncVectorConnectionsInput
+  ): Promise<number> {
+    if (!input.edges || input.edges.length === 0) return 0;
+    if (!isValidUuid(input.userId)) return 0;
+    let stored = 0;
+    const seen = new Set<string>();
+
+    for (const edge of input.edges) {
+      try {
+        if (
+          !isValidUuid(edge.sourceBucketId) ||
+          !isValidUuid(edge.targetBucketId)
+        ) {
+          continue;
+        }
+        if (edge.sourceBucketId === edge.targetBucketId) continue;
+
+        const key = [edge.sourceBucketId, edge.targetBucketId].sort().join(":");
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        const confidence = clampUnit(edge.confidence);
+        const similarity = clampUnit(edge.similarity ?? confidence);
+
+        const sourceCanonical =
+          edge.sourceLabel || (await this.resolveCanonical(edge.sourceBucketId));
+        const targetCanonical =
+          edge.targetLabel || (await this.resolveCanonical(edge.targetBucketId));
+        if (!sourceCanonical || !targetCanonical) continue;
+
+        const evidence =
+          edge.evidence ?? `${sourceCanonical} -> ${targetCanonical}`;
+        const sourceDocumentId =
+          edge.sourceDocumentId ?? input.documentId ?? null;
+        const targetDocumentId = edge.targetDocumentId ?? null;
+
+        const relationshipId = await this.createRelationship({
+          sourceBucket: sourceCanonical,
+          targetBucket: targetCanonical,
+          relationType: "related_to",
+          confidence,
+          sourceText: evidence,
+          sourceBucketId: edge.sourceBucketId,
+          targetBucketId: edge.targetBucketId,
+          userId: input.userId,
+          documentId: input.documentId ?? null,
+          sourceDocumentId,
+          targetDocumentId,
+          metadata: {
+            method: "vector",
+            similarity,
+            sourceDocumentId,
+            targetDocumentId,
+            evidence,
+          },
+        });
+        if (relationshipId) stored++;
+      } catch {
+        continue;
+      }
+    }
+    return stored;
+  }
+
+  async clearDocumentLinks(
+    userId: string,
+    sourceDocumentId: string
+  ): Promise<void> {
+    if (!isValidUuid(userId) || !isValidUuid(sourceDocumentId)) return;
+    try {
+      await query(
+        `DELETE FROM document_links
+         WHERE user_id = $1::uuid
+         AND source_document_id = $2::uuid`,
+        [userId, sourceDocumentId]
+      );
+    } catch (error) {
+      logger.warn("clearDocumentLinks failed", {
+        userId,
+        sourceDocumentId,
+        error: (error as Error).message,
+      });
+    }
+  }
+
+  private async upsertDocumentLinkAbsolute(
+    userId: string,
+    sourceDocumentId: string,
+    link: DocumentLinkInput
+  ): Promise<boolean> {
+    if (!isValidUuid(userId) || !isValidUuid(sourceDocumentId)) {
+      return false;
+    }
+    if (!isValidUuid(link.targetDocumentId)) {
+      return false;
+    }
+    if (link.targetDocumentId === sourceDocumentId) {
+      return false;
     }
 
-    req.userId = dev.userId;
-    req.userEmail = dev.email;
-    req.tokenPayload = {
-      userId: dev.userId,
-      email: dev.email,
+    try {
+      await query(
+        `INSERT INTO document_links (
+          user_id,
+          source_document_id,
+          target_document_id,
+          correlation_score,
+          shared_bucket_count,
+          edge_count,
+          avg_confidence,
+          updated_at
+        )
+        VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, now())
+        ON CONFLICT (user_id, source_document_id, target_document_id)
+        DO UPDATE SET
+          correlation_score = EXCLUDED.correlation_score,
+          shared_bucket_count = EXCLUDED.shared_bucket_count,
+          edge_count = EXCLUDED.edge_count,
+          avg_confidence = EXCLUDED.avg_confidence,
+          updated_at = now()`,
+        [
+          userId,
+          sourceDocumentId,
+          link.targetDocumentId,
+          round4(link.correlationScore),
+          nonNegativeInt(link.sharedBucketCount),
+          nonNegativeInt(link.edgeCount),
+          round4(link.avgConfidence),
+        ]
+      );
+      return true;
+    } catch (error) {
+      logger.debug("upsertDocumentLinkAbsolute failed", {
+        userId,
+        sourceDocumentId,
+        targetDocumentId: link.targetDocumentId,
+        error: (error as Error).message,
+      });
+      return false;
+    }
+  }
+
+  async saveDocumentLinks(
+    userId: string,
+    sourceDocumentId: string,
+    links: DocumentLinkInput[]
+  ): Promise<number> {
+    if (!isValidUuid(userId) || !isValidUuid(sourceDocumentId)) return 0;
+    if (!Array.isArray(links)) return 0;
+    let saved = 0;
+    for (const rawLink of links) {
+      const link = normalizeDocumentLink(rawLink, sourceDocumentId);
+      if (!link) continue;
+      const ok = await this.upsertDocumentLinkAbsolute(
+        userId,
+        sourceDocumentId,
+        link
+      );
+      if (ok) saved++;
+    }
+    return saved;
+  }
+
+  private async getExistingDocumentLinks(
+    userId: string,
+    sourceDocumentId: string
+  ): Promise<Map<string, DocumentLinkInput>> {
+    const result = new Map<string, DocumentLinkInput>();
+    if (!isValidUuid(userId) || !isValidUuid(sourceDocumentId)) {
+      return result;
+    }
+    try {
+      const rows = await queryMany<{
+        target_document_id: string;
+        correlation_score: number;
+        shared_bucket_count: number;
+        edge_count: number;
+        avg_confidence: number;
+      }>(
+        `SELECT target_document_id,
+                correlation_score,
+                shared_bucket_count,
+                edge_count,
+                avg_confidence
+         FROM document_links
+         WHERE user_id = $1::uuid
+         AND source_document_id = $2::uuid`,
+        [userId, sourceDocumentId]
+      );
+      for (const row of rows) {
+        result.set(row.target_document_id, {
+          targetDocumentId: row.target_document_id,
+          correlationScore: round4(row.correlation_score),
+          sharedBucketCount: nonNegativeInt(row.shared_bucket_count),
+          edgeCount: nonNegativeInt(row.edge_count),
+          avgConfidence: round4(row.avg_confidence),
+        });
+      }
+    } catch (error) {
+      logger.debug("getExistingDocumentLinks failed", {
+        userId,
+        sourceDocumentId,
+        error: (error as Error).message,
+      });
+    }
+    return result;
+  }
+
+  private mergeDocumentLink(
+    existing: DocumentLinkInput | undefined,
+    incoming: DocumentLinkInput
+  ): DocumentLinkInput {
+    if (!existing) {
+      return incoming;
+    }
+    const edgeCount = existing.edgeCount + incoming.edgeCount;
+    const avgConfidence =
+      edgeCount > 0
+        ? (existing.avgConfidence * existing.edgeCount +
+            incoming.avgConfidence * incoming.edgeCount) /
+          edgeCount
+        : incoming.avgConfidence;
+
+    return {
+      targetDocumentId: incoming.targetDocumentId,
+      correlationScore: round4(
+        Math.max(existing.correlationScore, incoming.correlationScore)
+      ),
+      sharedBucketCount: Math.max(
+        existing.sharedBucketCount,
+        incoming.sharedBucketCount
+      ),
+      edgeCount,
+      avgConfidence: round4(avgConfidence),
     };
-
-    next();
-    return;
   }
 
-  try {
-    const payload = verifyToken(token);
-
-    if (!payload) {
-      res.status(401).json({ error: "Invalid or expired token" });
-      return;
+  async aggregateDocumentLinks(
+    userId: string,
+    documentId: string,
+    options?: {
+      links?: DocumentLinkInput[];
+      topN?: number;
     }
+  ): Promise<number> {
+    if (!isValidUuid(userId) || !isValidUuid(documentId)) return 0;
 
-    req.userId = payload.userId;
-    req.userEmail = payload.email;
-    req.tokenPayload = payload;
+    const incomingLinks: DocumentLinkInput[] = [];
 
-    next();
-  } catch (error) {
-    const err = error as Error;
+    if (options?.links && options.links.length > 0) {
+      for (const rawLink of options.links) {
+        const link = normalizeDocumentLink(rawLink, documentId);
+        if (link) incomingLinks.push(link);
+      }
+    } else {
+      try {
+        const rows = await queryMany<{
+          other_document_id: string;
+          edge_count: number;
+          avg_confidence: number;
+          shared_bucket_count: number;
+        }>(
+          `WITH meta_edges AS (
+            SELECT NULLIF(metadata->>'sourceDocumentId', '') AS source_document_id,
+                   NULLIF(metadata->>'targetDocumentId', '') AS target_document_id,
+                   source_bucket_id,
+                   confidence
+            FROM relationships
+            WHERE user_id = $1::uuid
+            AND metadata IS NOT NULL
+            AND NULLIF(metadata->>'sourceDocumentId', '') IS NOT NULL
+            AND NULLIF(metadata->>'targetDocumentId', '') IS NOT NULL
+            AND NULLIF(metadata->>'sourceDocumentId', '') <> NULLIF(metadata->>'targetDocumentId', '')
+          ), normalized AS (
+            SELECT CASE
+                     WHEN source_document_id = $2::text THEN target_document_id
+                     ELSE source_document_id
+                   END AS other_document_id,
+                   source_bucket_id,
+                   confidence
+            FROM meta_edges
+            WHERE source_document_id = $2::text
+               OR target_document_id = $2::text
+          )
+          SELECT n.other_document_id,
+                 COUNT(*)::int AS edge_count,
+                 COALESCE(AVG(n.confidence), 0)::float AS avg_confidence,
+                 COUNT(DISTINCT n.source_bucket_id)::int AS shared_bucket_count
+          FROM normalized n
+          JOIN documents d ON d.document_id::text = n.other_document_id
+          WHERE d.user_id = $1::uuid
+          AND n.other_document_id IS NOT NULL
+          AND n.other_document_id <> $2::text
+          GROUP BY n.other_document_id`,
+          [userId, documentId]
+        );
 
-    if (err.name === "TokenExpiredError") {
-      logger.debug("Token expired", {
-        path: req.path,
-        method: req.method,
-      });
-
-      res.status(401).json({ error: "Token expired" });
-      return;
-    }
-
-    if (err.name === "JsonWebTokenError") {
-      logger.debug("Invalid token", {
-        path: req.path,
-        method: req.method,
-        error: err.message,
-      });
-
-      res.status(401).json({ error: "Invalid token" });
-      return;
-    }
-
-    logger.error("Auth middleware unexpected error", {
-      path: req.path,
-      method: req.method,
-      error: err.message,
-    });
-
-    res.status(500).json({ error: "Authentication error" });
-  }
-}
-
-export async function optionalAuthMiddleware(
-  req: AuthenticatedRequest,
-  _res: Response,
-  next: NextFunction
-): Promise<void> {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader) {
-    next();
-    return;
-  }
-
-  const parts = authHeader.split(" ");
-
-  if (parts.length !== 2 || parts[0] !== "Bearer") {
-    next();
-    return;
-  }
-
-  const token = parts[1];
-
-  if (!token || token.length === 0) {
-    next();
-    return;
-  }
-
-  if (DEV_BYPASS_AUTH && token === DEV_BYPASS_TOKEN) {
-    const dev = await resolveDevUser();
-
-    if (dev) {
-      req.userId = dev.userId;
-      req.userEmail = dev.email;
-      req.tokenPayload = {
-        userId: dev.userId,
-        email: dev.email,
-      };
-    }
-
-    next();
-    return;
-  }
-
-  try {
-    const payload = verifyToken(token);
-
-    if (payload) {
-      req.userId = payload.userId;
-      req.userEmail = payload.email;
-      req.tokenPayload = payload;
-    }
-  } catch {
-    logger.debug("Optional auth: token invalid, continuing without auth", {
-      path: req.path,
-    });
-  }
-
-  next();
-}
-
-export function requireRole(...roles: string[]) {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
-    if (!req.userId) {
-      res.status(401).json({ error: "Authentication required" });
-      return;
-    }
-
-    const userRole = (req.tokenPayload as TokenPayload & { role?: string })?.role;
-
-    if (!userRole || !roles.includes(userRole)) {
-      logger.warn("Role authorization failed", {
-        userId: req.userId,
-        requiredRoles: roles,
-        userRole,
-        path: req.path,
-      });
-
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
-
-    next();
-  };
-}
-
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-}
-
-export function rateLimitByKey(
-  maxRequests: number = 60,
-  windowMs: number = 60000,
-  keyGenerator: (req: AuthenticatedRequest) => string = (req) => {
-    return (
-      req.userId ??
-      req.userEmail ??
-      req.ip ??
-      req.socket.remoteAddress ??
-      "anonymous"
-    );
-  }
-) {
-  const requests = new Map<string, RateLimitEntry>();
-
-  const timer = setInterval(() => {
-    const now = Date.now();
-
-    for (const [key, value] of requests) {
-      if (value.resetAt <= now) {
-        requests.delete(key);
+        for (const row of rows) {
+          const edgeCount = nonNegativeInt(row.edge_count);
+          const avgConfidence = round4(row.avg_confidence);
+          const correlationScore = round4(
+            0.45 * avgConfidence +
+              0.35 * Math.min(1, edgeCount / 5) +
+              0.2 * Math.min(1, edgeCount / 10)
+          );
+          incomingLinks.push({
+            targetDocumentId: row.other_document_id,
+            correlationScore,
+            sharedBucketCount: nonNegativeInt(row.shared_bucket_count),
+            edgeCount,
+            avgConfidence,
+          });
+        }
+      } catch (error) {
+        logger.error("aggregateDocumentLinks query failed", {
+          userId,
+          documentId,
+          error: (error as Error).message,
+        });
+        return 0;
       }
     }
-  }, Math.min(windowMs, 60000));
 
-  if (typeof timer.unref === "function") {
-    timer.unref();
-  }
-
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
-    const key = keyGenerator(req);
-    const now = Date.now();
-
-    let entry = requests.get(key);
-
-    if (!entry || entry.resetAt <= now) {
-      entry = {
-        count: 0,
-        resetAt: now + windowMs,
-      };
-
-      requests.set(key, entry);
+    if (incomingLinks.length === 0) {
+      return 0;
     }
 
-    entry.count += 1;
-
-    res.setHeader("X-RateLimit-Limit", maxRequests);
-    res.setHeader("X-RateLimit-Remaining", Math.max(0, maxRequests - entry.count));
-    res.setHeader("X-RateLimit-Reset", Math.ceil(entry.resetAt / 1000));
-
-    if (entry.count > maxRequests) {
-      logger.warn("Rate limit exceeded", {
-        key,
-        count: entry.count,
-        maxRequests,
-        path: req.path,
-      });
-
-      res.status(429).json({
-        error: "Too many requests",
-        details: "Please slow down and try again shortly.",
-      });
-
-      return;
-    }
-
-    next();
-  };
-}
-
-export function rateLimitByUser(maxRequests: number = 60, windowMs: number = 60000) {
-  return rateLimitByKey(maxRequests, windowMs, (req) => {
-    return (
-      req.userId ??
-      req.userEmail ??
-      req.ip ??
-      req.socket.remoteAddress ??
-      "unknown"
+    const existingLinks = await this.getExistingDocumentLinks(
+      userId,
+      documentId
     );
-  });
+
+    let saved = 0;
+    for (const incoming of incomingLinks) {
+      const existing = existingLinks.get(incoming.targetDocumentId);
+      const merged = this.mergeDocumentLink(existing, incoming);
+      const ok = await this.upsertDocumentLinkAbsolute(
+        userId,
+        documentId,
+        merged
+      );
+      if (ok) saved++;
+    }
+    return saved;
+  }
+
+  async getRelatedDocuments(
+    userId: string,
+    documentId: string,
+    limit?: number
+  ): Promise<RelatedDocumentRow[]> {
+    if (!isValidUuid(userId) || !isValidUuid(documentId)) return [];
+    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit ?? 10)));
+
+    try {
+      const rows = await queryMany<{
+        document_id: string;
+        filename: string;
+        correlation: number;
+        shared_concepts: number;
+        edges: number;
+        avg_confidence: number;
+      }>(
+        `WITH links AS (
+          SELECT CASE
+                   WHEN source_document_id = $2::uuid THEN target_document_id
+                   ELSE source_document_id
+                 END AS other_document_id,
+                 correlation_score,
+                 shared_bucket_count,
+                 edge_count,
+                 avg_confidence
+          FROM document_links
+          WHERE user_id = $1::uuid
+          AND (source_document_id = $2::uuid OR target_document_id = $2::uuid)
+        )
+        SELECT links.other_document_id::text AS document_id,
+               d.filename,
+               MAX(links.correlation_score)::float AS correlation,
+               MAX(links.shared_bucket_count)::int AS shared_concepts,
+               MAX(links.edge_count)::int AS edges,
+               MAX(links.avg_confidence)::float AS avg_confidence
+        FROM links
+        JOIN documents d ON d.document_id = links.other_document_id
+        WHERE d.user_id = $1::uuid
+        AND links.other_document_id <> $2::uuid
+        GROUP BY links.other_document_id, d.filename
+        ORDER BY correlation DESC, edges DESC
+        LIMIT $3`,
+        [userId, documentId, safeLimit]
+      );
+
+      return rows.map((row) => ({
+        documentId: row.document_id,
+        filename: row.filename,
+        correlation: round4(row.correlation),
+        sharedConcepts: nonNegativeInt(row.shared_concepts),
+        edges: nonNegativeInt(row.edges),
+        avgConfidence: round4(row.avg_confidence),
+      }));
+    } catch (error) {
+      logger.error("getRelatedDocuments failed", {
+        userId,
+        documentId,
+        error: (error as Error).message,
+      });
+      return [];
+    }
+  }
+
+  async getTopConnectedMemories(
+    userId: string,
+    documentId: string,
+    limit?: number
+  ): Promise<TopConnectedMemoryRow[]> {
+    if (!isValidUuid(userId) || !isValidUuid(documentId)) return [];
+    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit ?? 10)));
+
+    try {
+      const rows = await queryMany<{
+        bucket_id: string;
+        canonical: string;
+        relation_type: string;
+        confidence: number;
+        document_id: string | null;
+      }>(
+        `SELECT l.connected_bucket_id AS bucket_id,
+                b.canonical,
+                l.relation_type,
+                MAX(l.confidence)::float AS confidence,
+                b.document_id
+         FROM (
+           SELECT CASE
+                    WHEN NULLIF(metadata->>'sourceDocumentId', '') = $2::text
+                    THEN target_bucket_id
+                    ELSE source_bucket_id
+                  END AS connected_bucket_id,
+                  relation_type,
+                  confidence
+           FROM relationships
+           WHERE user_id = $1::uuid
+           AND metadata IS NOT NULL
+           AND (
+             NULLIF(metadata->>'sourceDocumentId', '') = $2::text
+             OR NULLIF(metadata->>'targetDocumentId', '') = $2::text
+           )
+         ) l
+         JOIN buckets b ON b.bucket_id = l.connected_bucket_id
+         WHERE l.connected_bucket_id IS NOT NULL
+         AND (b.document_id IS NULL OR b.document_id::text <> $2::text)
+         GROUP BY l.connected_bucket_id, b.canonical, l.relation_type, b.document_id
+         ORDER BY confidence DESC
+         LIMIT $3`,
+        [userId, documentId, safeLimit * 2]
+      );
+
+      const deduped = new Map<string, TopConnectedMemoryRow>();
+      for (const row of rows) {
+        const existing = deduped.get(row.bucket_id);
+        if (!existing || Number(row.confidence) > existing.confidence) {
+          deduped.set(row.bucket_id, {
+            bucketId: row.bucket_id,
+            label: row.canonical,
+            relationType: row.relation_type,
+            confidence: round4(row.confidence),
+            documentId: row.document_id,
+          });
+        }
+      }
+      return Array.from(deduped.values()).slice(0, safeLimit);
+    } catch (error) {
+      logger.error("getTopConnectedMemories failed", {
+        userId,
+        documentId,
+        error: (error as Error).message,
+      });
+      return [];
+    }
+  }
+
+  async getConnectionStats(
+    userId: string,
+    documentId: string,
+    exactMerges: number = 0
+  ): Promise<ConnectionStatsRow> {
+    const exact = Math.max(0, Math.round(exactMerges));
+
+    if (!isValidUuid(userId) || !isValidUuid(documentId)) {
+      return {
+        exactMerges: exact,
+        semanticConnections: 0,
+        crossDocumentConnections: 0,
+        strongConnections: 0,
+        connectionScore: round4(exact > 0 ? 0.35 : 0),
+      };
+    }
+
+    try {
+      const strongThreshold = 0.75;
+      const row = await queryOne<{
+        semantic: number;
+        cross_document: number;
+        strong: number;
+        avg_confidence: number;
+      }>(
+        `WITH doc_edges AS (
+          SELECT confidence,
+                 NULLIF(metadata->>'sourceDocumentId', '') AS src_doc,
+                 NULLIF(metadata->>'targetDocumentId', '') AS tgt_doc,
+                 COALESCE(metadata->>'method', '') AS method
+          FROM relationships
+          WHERE user_id = $1::uuid
+          AND metadata IS NOT NULL
+          AND (
+            NULLIF(metadata->>'sourceDocumentId', '') = $2::text
+            OR NULLIF(metadata->>'targetDocumentId', '') = $2::text
+          )
+        )
+        SELECT COALESCE(SUM(CASE WHEN method IN ('vector', 'ai') THEN 1 ELSE 0 END), 0)::int AS semantic,
+               COALESCE(SUM(CASE WHEN method IN ('vector', 'ai') AND src_doc IS NOT NULL AND tgt_doc IS NOT NULL AND src_doc <> tgt_doc THEN 1 ELSE 0 END), 0)::int AS cross_document,
+               COALESCE(SUM(CASE WHEN method IN ('vector', 'ai') AND confidence >= $3 THEN 1 ELSE 0 END), 0)::int AS strong,
+               COALESCE(AVG(CASE WHEN method IN ('vector', 'ai') THEN confidence END), 0)::float AS avg_confidence
+        FROM doc_edges`,
+        [userId, documentId, strongThreshold]
+      );
+
+      const semantic = nonNegativeInt(row?.semantic);
+      const cross = nonNegativeInt(row?.cross_document);
+      const strong = nonNegativeInt(row?.strong);
+      const avg = round4(row?.avg_confidence);
+
+      const exactRate = Math.min(1, exact / 2);
+      const semanticRate = Math.min(1, semantic / 5);
+      const crossRate = Math.min(1, cross / 5);
+
+      let connectionScore =
+        0.45 * exactRate +
+        0.3 * semanticRate +
+        0.15 * crossRate +
+        0.1 * avg;
+
+      if (exact > 0 && connectionScore < 0.35) {
+        connectionScore = 0.35;
+      }
+
+      return {
+        exactMerges: exact,
+        semanticConnections: semantic,
+        crossDocumentConnections: cross,
+        strongConnections: strong,
+        connectionScore: round4(connectionScore),
+      };
+    } catch (error) {
+      logger.error("getConnectionStats failed", {
+        userId,
+        documentId,
+        error: (error as Error).message,
+      });
+      return {
+        exactMerges: exact,
+        semanticConnections: 0,
+        crossDocumentConnections: 0,
+        strongConnections: 0,
+        connectionScore: round4(exact > 0 ? 0.35 : 0),
+      };
+    }
+  }
+
+  async expandFromBucketIds(
+    bucketIds: string[],
+    userId?: string | null,
+    limit: number = 40
+  ): Promise<ExpandedEdge[]> {
+    const safeBucketIds = (bucketIds || []).filter(isValidUuid);
+    if (safeBucketIds.length === 0) return [];
+    const safeUserId = userId && isValidUuid(userId) ? userId : null;
+    const results: ExpandedEdge[] = [];
+    const seen = new Set<string>();
+
+    try {
+      const idRows = safeUserId
+        ? await queryMany<{
+            source_bucket_id: string | null;
+            target_bucket_id: string | null;
+            relation_type: string;
+            confidence: number;
+          }>(
+            `SELECT source_bucket_id, target_bucket_id, relation_type, confidence
+             FROM relationships
+             WHERE (source_bucket_id = ANY($1::uuid[]) OR target_bucket_id = ANY($1::uuid[]))
+             AND source_bucket_id IS NOT NULL
+             AND target_bucket_id IS NOT NULL
+             AND (user_id = $2::uuid OR user_id IS NULL)
+             ORDER BY confidence DESC
+             LIMIT $3`,
+            [safeBucketIds, safeUserId, limit * 2]
+          )
+        : await queryMany<{
+            source_bucket_id: string | null;
+            target_bucket_id: string | null;
+            relation_type: string;
+            confidence: number;
+          }>(
+            `SELECT source_bucket_id, target_bucket_id, relation_type, confidence
+             FROM relationships
+             WHERE (source_bucket_id = ANY($1::uuid[]) OR target_bucket_id = ANY($1::uuid[]))
+             AND source_bucket_id IS NOT NULL
+             AND target_bucket_id IS NOT NULL
+             ORDER BY confidence DESC
+             LIMIT $2`,
+            [safeBucketIds, limit * 2]
+          );
+
+      for (const row of idRows) {
+        if (!row.source_bucket_id || !row.target_bucket_id) continue;
+        const key = `${row.source_bucket_id}:${row.target_bucket_id}:${row.relation_type}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        results.push({
+          sourceBucketId: row.source_bucket_id,
+          targetBucketId: row.target_bucket_id,
+          relationType: row.relation_type,
+          confidence: Number(row.confidence),
+        });
+      }
+    } catch (error) {
+      logger.debug("ID-based expansion failed", {
+        error: (error as Error).message,
+      });
+    }
+
+    try {
+      const canonicalRows = await queryMany<{
+        bucket_id: string;
+        canonical: string;
+      }>(
+        `SELECT bucket_id, canonical
+         FROM buckets
+         WHERE bucket_id = ANY($1::uuid[])`,
+        [safeBucketIds]
+      );
+
+      const canonicals = canonicalRows.map((r) => r.canonical);
+
+      if (canonicals.length > 0) {
+        const fallbackRows = safeUserId
+          ? await queryMany<{
+              source_bucket_id: string | null;
+              target_bucket_id: string | null;
+              relation_type: string;
+              confidence: number;
+            }>(
+              `SELECT r.source_bucket_id,
+                      r.target_bucket_id,
+                      r.relation_type,
+                      r.confidence
+               FROM relationships r
+               JOIN buckets b1 ON b1.canonical = r.source_bucket
+               JOIN buckets b2 ON b2.canonical = r.target_bucket
+               WHERE (r.source_bucket = ANY($1::text[]) OR r.target_bucket = ANY($1::text[]))
+               AND (r.source_bucket_id IS NULL OR r.target_bucket_id IS NULL)
+               AND (b1.user_id = $2::uuid OR b1.user_id IS NULL)
+               AND (b2.user_id = $2::uuid OR b2.user_id IS NULL)
+               ORDER BY r.confidence DESC
+               LIMIT $3`,
+              [canonicals, safeUserId, limit * 2]
+            )
+          : await queryMany<{
+              source_bucket_id: string | null;
+              target_bucket_id: string | null;
+              relation_type: string;
+              confidence: number;
+            }>(
+              `SELECT r.source_bucket_id,
+                      r.target_bucket_id,
+                      r.relation_type,
+                      r.confidence
+               FROM relationships r
+               JOIN buckets b1 ON b1.canonical = r.source_bucket
+               JOIN buckets b2 ON b2.canonical = r.target_bucket
+               WHERE (r.source_bucket = ANY($1::text[]) OR r.target_bucket = ANY($1::text[]))
+               AND (r.source_bucket_id IS NULL OR r.target_bucket_id IS NULL)
+               ORDER BY r.confidence DESC
+               LIMIT $2`,
+              [canonicals, limit * 2]
+            );
+
+        for (const row of fallbackRows) {
+          if (!row.source_bucket_id || !row.target_bucket_id) continue;
+          const key = `${row.source_bucket_id}:${row.target_bucket_id}:${row.relation_type}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          results.push({
+            sourceBucketId: row.source_bucket_id,
+            targetBucketId: row.target_bucket_id,
+            relationType: row.relation_type,
+            confidence: Number(row.confidence),
+          });
+        }
+      }
+    } catch (error) {
+      logger.debug("Canonical fallback expansion failed", {
+        error: (error as Error).message,
+      });
+    }
+
+    return results.slice(0, limit);
+  }
+
+  async getRelationshipsFrom(
+    bucketId: string,
+    userId?: string | null
+  ): Promise<RelationshipWithMeta[]> {
+    if (!isValidUuid(bucketId)) return [];
+    const safeUserId = userId && isValidUuid(userId) ? userId : null;
+
+    try {
+      const idRows = safeUserId
+        ? await queryMany<
+            RelationshipRow & {
+              connected_bucket_id: string;
+              connected_bucket_name: string;
+              connected_bucket_type: string;
+            }
+          >(
+            `SELECT r.*,
+                    b.bucket_id AS connected_bucket_id,
+                    b.canonical AS connected_bucket_name,
+                    b.concept_type AS connected_bucket_type
+             FROM relationships r
+             JOIN buckets b ON b.bucket_id = r.target_bucket_id
+             WHERE r.source_bucket_id = $1::uuid
+             AND (r.user_id = $2::uuid OR r.user_id IS NULL)
+             ORDER BY r.confidence DESC`,
+            [bucketId, safeUserId]
+          )
+        : await queryMany<
+            RelationshipRow & {
+              connected_bucket_id: string;
+              connected_bucket_name: string;
+              connected_bucket_type: string;
+            }
+          >(
+            `SELECT r.*,
+                    b.bucket_id AS connected_bucket_id,
+                    b.canonical AS connected_bucket_name,
+                    b.concept_type AS connected_bucket_type
+             FROM relationships r
+             JOIN buckets b ON b.bucket_id = r.target_bucket_id
+             WHERE r.source_bucket_id = $1::uuid
+             ORDER BY r.confidence DESC`,
+            [bucketId]
+          );
+
+      if (idRows.length > 0) {
+        return idRows.map((row) =>
+          mapRowToRelationshipWithMeta(
+            {
+              ...row,
+              source_bucket: bucketId,
+              target_bucket: row.connected_bucket_id,
+            } as any,
+            bucketId
+          )
+        );
+      }
+
+      const sourceRow = await queryOne<{ canonical: string }>(
+        "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
+        [bucketId]
+      );
+      if (!sourceRow) return [];
+
+      const rows = safeUserId
+        ? await queryMany<
+            RelationshipRow & {
+              connected_bucket_id: string;
+              connected_bucket_name: string;
+              connected_bucket_type: string;
+            }
+          >(
+            `SELECT r.*,
+                    b.bucket_id AS connected_bucket_id,
+                    b.canonical AS connected_bucket_name,
+                    b.concept_type AS connected_bucket_type
+             FROM relationships r
+             JOIN buckets b ON b.canonical = r.target_bucket
+             WHERE r.source_bucket = $1
+             AND (b.user_id = $2::uuid OR b.user_id IS NULL)
+             ORDER BY r.confidence DESC`,
+            [sourceRow.canonical, safeUserId]
+          )
+        : await queryMany<
+            RelationshipRow & {
+              connected_bucket_id: string;
+              connected_bucket_name: string;
+              connected_bucket_type: string;
+            }
+          >(
+            `SELECT r.*,
+                    b.bucket_id AS connected_bucket_id,
+                    b.canonical AS connected_bucket_name,
+                    b.concept_type AS connected_bucket_type
+             FROM relationships r
+             JOIN buckets b ON b.canonical = r.target_bucket
+             WHERE r.source_bucket = $1
+             ORDER BY r.confidence DESC`,
+            [sourceRow.canonical]
+          );
+
+      return rows.map((row) =>
+        mapRowToRelationshipWithMeta(
+          {
+            ...row,
+            source_bucket: bucketId,
+            target_bucket: row.connected_bucket_id,
+          } as any,
+          bucketId
+        )
+      );
+    } catch (error) {
+      logger.error("getRelationshipsFrom failed", {
+        bucketId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getRelationshipsTo(
+    bucketId: string,
+    userId?: string | null
+  ): Promise<RelationshipWithMeta[]> {
+    if (!isValidUuid(bucketId)) return [];
+    const safeUserId = userId && isValidUuid(userId) ? userId : null;
+
+    try {
+      const idRows = safeUserId
+        ? await queryMany<
+            RelationshipRow & {
+              connected_bucket_id: string;
+              connected_bucket_name: string;
+              connected_bucket_type: string;
+            }
+          >(
+            `SELECT r.*,
+                    b.bucket_id AS connected_bucket_id,
+                    b.canonical AS connected_bucket_name,
+                    b.concept_type AS connected_bucket_type
+             FROM relationships r
+             JOIN buckets b ON b.bucket_id = r.source_bucket_id
+             WHERE r.target_bucket_id = $1::uuid
+             AND (r.user_id = $2::uuid OR r.user_id IS NULL)
+             ORDER BY r.confidence DESC`,
+            [bucketId, safeUserId]
+          )
+        : await queryMany<
+            RelationshipRow & {
+              connected_bucket_id: string;
+              connected_bucket_name: string;
+              connected_bucket_type: string;
+            }
+          >(
+            `SELECT r.*,
+                    b.bucket_id AS connected_bucket_id,
+                    b.canonical AS connected_bucket_name,
+                    b.concept_type AS connected_bucket_type
+             FROM relationships r
+             JOIN buckets b ON b.bucket_id = r.source_bucket_id
+             WHERE r.target_bucket_id = $1::uuid
+             ORDER BY r.confidence DESC`,
+            [bucketId]
+          );
+
+      if (idRows.length > 0) {
+        return idRows.map((row) =>
+          mapRowToRelationshipWithMeta(
+            {
+              ...row,
+              source_bucket: row.connected_bucket_id,
+              target_bucket: bucketId,
+            } as any,
+            bucketId
+          )
+        );
+      }
+
+      const targetRow = await queryOne<{ canonical: string }>(
+        "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
+        [bucketId]
+      );
+      if (!targetRow) return [];
+
+      const rows = safeUserId
+        ? await queryMany<
+            RelationshipRow & {
+              connected_bucket_id: string;
+              connected_bucket_name: string;
+              connected_bucket_type: string;
+            }
+          >(
+            `SELECT r.*,
+                    b.bucket_id AS connected_bucket_id,
+                    b.canonical AS connected_bucket_name,
+                    b.concept_type AS connected_bucket_type
+             FROM relationships r
+             JOIN buckets b ON b.canonical = r.source_bucket
+             WHERE r.target_bucket = $1
+             AND (b.user_id = $2::uuid OR b.user_id IS NULL)
+             ORDER BY r.confidence DESC`,
+            [targetRow.canonical, safeUserId]
+          )
+        : await queryMany<
+            RelationshipRow & {
+              connected_bucket_id: string;
+              connected_bucket_name: string;
+              connected_bucket_type: string;
+            }
+          >(
+            `SELECT r.*,
+                    b.bucket_id AS connected_bucket_id,
+                    b.canonical AS connected_bucket_name,
+                    b.concept_type AS connected_bucket_type
+             FROM relationships r
+             JOIN buckets b ON b.canonical = r.source_bucket
+             WHERE r.target_bucket = $1
+             ORDER BY r.confidence DESC`,
+            [targetRow.canonical]
+          );
+
+      return rows.map((row) =>
+        mapRowToRelationshipWithMeta(
+          {
+            ...row,
+            source_bucket: row.connected_bucket_id,
+            target_bucket: bucketId,
+          } as any,
+          bucketId
+        )
+      );
+    } catch (error) {
+      logger.error("getRelationshipsTo failed", {
+        bucketId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getAllConnected(
+    bucketId: string,
+    userId?: string | null
+  ): Promise<RelationshipWithMeta[]> {
+    try {
+      const [outgoing, incoming] = await Promise.all([
+        this.getRelationshipsFrom(bucketId, userId),
+        this.getRelationshipsTo(bucketId, userId),
+      ]);
+
+      const seen = new Set<string>();
+      const merged: RelationshipWithMeta[] = [];
+
+      for (const rel of outgoing) {
+        if (!seen.has(rel.relationshipId)) {
+          seen.add(rel.relationshipId);
+          merged.push(rel);
+        }
+      }
+      for (const rel of incoming) {
+        if (!seen.has(rel.relationshipId)) {
+          seen.add(rel.relationshipId);
+          merged.push(rel);
+        }
+      }
+      return merged;
+    } catch (error) {
+      logger.error("getAllConnected failed", {
+        bucketId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getMultiHop(
+    startBucketIds: string[],
+    maxHops: number = 2,
+    userId?: string | null
+  ): Promise<Relationship[]> {
+    const safeStartIds = (startBucketIds || []).filter(isValidUuid);
+    if (safeStartIds.length === 0) return [];
+    if (maxHops < 1) return [];
+
+    const visited = new Set<string>(safeStartIds);
+    let currentLevel = new Set<string>(safeStartIds);
+    const allRelationships: Relationship[] = [];
+
+    for (let hop = 0; hop < maxHops; hop++) {
+      const nextLevel = new Set<string>();
+      const edges = await this.expandFromBucketIds(
+        Array.from(currentLevel),
+        userId,
+        100
+      );
+
+      for (const edge of edges) {
+        allRelationships.push({
+          relationshipId: `${edge.sourceBucketId}:${edge.targetBucketId}:${edge.relationType}`,
+          sourceBucket: edge.sourceBucketId,
+          targetBucket: edge.targetBucketId,
+          relationType: edge.relationType as RelationshipType,
+          confidence: edge.confidence,
+          sourceText: null,
+        } as Relationship);
+
+        const other = currentLevel.has(edge.sourceBucketId)
+          ? edge.targetBucketId
+          : edge.sourceBucketId;
+        if (!visited.has(other)) {
+          visited.add(other);
+          nextLevel.add(other);
+        }
+      }
+
+      currentLevel = nextLevel;
+      if (currentLevel.size === 0) break;
+    }
+
+    return this.deduplicateRelationships(allRelationships);
+  }
+
+  async strengthenCoAccess(bucketIds: string[]): Promise<number> {
+    const safeBucketIds = (bucketIds || []).filter(isValidUuid);
+    if (safeBucketIds.length < 2) return 0;
+    let updated = 0;
+
+    for (let i = 0; i < safeBucketIds.length; i++) {
+      for (let j = i + 1; j < safeBucketIds.length; j++) {
+        try {
+          const result = await query(
+            `UPDATE relationships
+             SET confidence = LEAST(1.0, confidence + 0.05)
+             WHERE (source_bucket_id = $1::uuid AND target_bucket_id = $2::uuid)
+                OR (source_bucket_id = $2::uuid AND target_bucket_id = $1::uuid)`,
+            [safeBucketIds[i], safeBucketIds[j]]
+          );
+          updated += result.rowCount ?? 0;
+        } catch {}
+      }
+    }
+
+    const canonicalMap = new Map<string, string>();
+    for (const bucketId of safeBucketIds) {
+      try {
+        const row = await queryOne<{ canonical: string }>(
+          "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
+          [bucketId]
+        );
+        if (row) canonicalMap.set(bucketId, row.canonical);
+      } catch {}
+    }
+
+    const resolvedIds = Array.from(canonicalMap.keys());
+    for (let i = 0; i < resolvedIds.length; i++) {
+      for (let j = i + 1; j < resolvedIds.length; j++) {
+        const canonA = canonicalMap.get(resolvedIds[i])!;
+        const canonB = canonicalMap.get(resolvedIds[j])!;
+        try {
+          const result = await query(
+            `UPDATE relationships
+             SET confidence = LEAST(1.0, confidence + 0.05)
+             WHERE (source_bucket = $1 AND target_bucket = $2)
+                OR (source_bucket = $2 AND target_bucket = $1)`,
+            [canonA, canonB]
+          );
+          updated += result.rowCount ?? 0;
+        } catch {}
+      }
+    }
+
+    return updated;
+  }
+
+  async getTotalCount(): Promise<number> {
+    try {
+      const row = await queryOne<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM relationships"
+      );
+      return row?.count ?? 0;
+    } catch (error) {
+      logger.error("getTotalCount failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getCountByType(): Promise<Record<string, number>> {
+    try {
+      const rows = await queryMany<{ relation_type: string; count: number }>(
+        "SELECT relation_type, COUNT(*)::int AS count FROM relationships GROUP BY relation_type"
+      );
+      const result: Record<string, number> = {};
+      for (const row of rows) {
+        result[row.relation_type] = row.count;
+      }
+      return result;
+    } catch (error) {
+      logger.error("getCountByType failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async cleanupOrphaned(): Promise<number> {
+    try {
+      const result = await query(
+        `DELETE FROM relationships
+         WHERE (source_bucket_id IS NOT NULL AND source_bucket_id NOT IN (SELECT bucket_id FROM buckets))
+            OR (target_bucket_id IS NOT NULL AND target_bucket_id NOT IN (SELECT bucket_id FROM buckets))
+            OR (source_bucket_id IS NULL AND source_bucket NOT IN (SELECT canonical FROM buckets))
+            OR (target_bucket_id IS NULL AND target_bucket NOT IN (SELECT canonical FROM buckets))`
+      );
+      const deleted = result.rowCount ?? 0;
+      if (deleted > 0) {
+        logger.info("Cleaned up orphaned relationships", { deleted });
+      }
+      return deleted;
+    } catch (error) {
+      logger.error("cleanupOrphaned failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async deleteByBucket(bucketId: string): Promise<number> {
+    if (!isValidUuid(bucketId)) return 0;
+    try {
+      const canonicalRow = await queryOne<{ canonical: string }>(
+        "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
+        [bucketId]
+      );
+
+      if (!canonicalRow) {
+        const result = await query(
+          `DELETE FROM relationships
+           WHERE source_bucket_id = $1::uuid
+              OR target_bucket_id = $1::uuid`,
+          [bucketId]
+        );
+        return result.rowCount ?? 0;
+      }
+
+      const result = await query(
+        `DELETE FROM relationships
+         WHERE source_bucket_id = $1::uuid
+            OR target_bucket_id = $1::uuid
+            OR source_bucket = $2
+            OR target_bucket = $2`,
+        [bucketId, canonicalRow.canonical]
+      );
+      return result.rowCount ?? 0;
+    } catch (error) {
+      logger.error("deleteByBucket failed", {
+        bucketId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async deleteRelationship(relationshipId: string): Promise<void> {
+    try {
+      await query(
+        "DELETE FROM relationships WHERE relationship_id = $1",
+        [relationshipId]
+      );
+    } catch (error) {
+      logger.error("deleteRelationship failed", {
+        relationshipId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getByType(
+    relationType: RelationshipType,
+    limit: number = 50
+  ): Promise<Relationship[]> {
+    try {
+      const rows = await queryMany<RelationshipRow>(
+        "SELECT * FROM relationships WHERE relation_type = $1 ORDER BY confidence DESC LIMIT $2",
+        [relationType, limit]
+      );
+      return rows.map(mapRowToRelationship);
+    } catch (error) {
+      logger.error("getByType failed", {
+        relationType,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getAll(): Promise<Relationship[]> {
+    try {
+      const rows = await queryMany<RelationshipRow>(
+        "SELECT * FROM relationships ORDER BY created_at DESC"
+      );
+      return rows.map(mapRowToRelationship);
+    } catch (error) {
+      logger.error("getAll failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async batchCreate(
+    paramsList: RelationshipCreateParamsExtended[]
+  ): Promise<number> {
+    if (paramsList.length === 0) return 0;
+    let created = 0;
+    try {
+      await withTransaction(async () => {
+        for (const params of paramsList) {
+          try {
+            const id = await this.createRelationship(params);
+            if (id) created++;
+          } catch {}
+        }
+      });
+    } catch (error) {
+      logger.error("batchCreate transaction failed", {
+        total: paramsList.length,
+        created,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+    return created;
+  }
+
+  private deduplicateRelationships(
+    relationships: Relationship[]
+  ): Relationship[] {
+    const seen = new Set<string>();
+    const deduplicated: Relationship[] = [];
+    for (const rel of relationships) {
+      const key = `${rel.sourceBucket}:${rel.targetBucket}:${rel.relationType}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduplicated.push(rel);
+    }
+    return deduplicated;
+  }
+}
+
+let relationshipStoreInstance: RelationshipStore | null = null;
+
+export function getRelationshipStore(): RelationshipStore {
+  if (!relationshipStoreInstance) {
+    relationshipStoreInstance = new RelationshipStore();
+  }
+  return relationshipStoreInstance;
 }
 
 
 ================================================================================
-FILE: src/api/demo.routes.ts
+FILE: src/memory/reminder-engine.ts
 ================================================================================
 
-import { Router, Request, Response } from "express";
-import { randomUUID } from "crypto";
-import { getDependencies } from "./dependencies";
-import { generateToken } from "../auth/tokens";
-import { toUserResponse } from "../models/user.model";
-import { rateLimitByKey } from "../auth/middleware";
+import config from "../config";
 import logger from "../utils/logger";
-
-const router = Router();
-
-const SANDBOX_TTL_MINUTES = 60;
-
-const demoLimiter = rateLimitByKey(3, 60 * 60 * 1000, (req) => {
-  return req.ip ?? req.socket.remoteAddress ?? "unknown";
-});
-
-router.post("/start", demoLimiter, async (_req: Request, res: Response) => {
-  try {
-    const { userStore } = getDependencies();
-
-    const email = `sandbox-${randomUUID()}@contextos.local`;
-    const password = randomUUID();
-
-    const user = await userStore.createSandboxUser({
-      email,
-      password,
-      displayName: "Sandbox Explorer",
-      ttlMinutes: SANDBOX_TTL_MINUTES,
-    });
-
-    const token = generateToken(user.userId, user.email);
-    const expiresAt = new Date(Date.now() + SANDBOX_TTL_MINUTES * 60 * 1000);
-
-    res.status(201).json({
-      token,
-      user: toUserResponse(user),
-      expiresAt: expiresAt.toISOString(),
-      ttlMinutes: SANDBOX_TTL_MINUTES,
-    });
-  } catch (error) {
-    logger.error("POST /demo/start failed", {
-      error: (error as Error).message,
-    });
-    res.status(500).json({ error: "Failed to launch sandbox" });
-  }
-});
-
-export default router;
-
-
-================================================================================
-FILE: src/api/users.routes.ts
-================================================================================
-
-import { Router, Response } from "express";
-import { authMiddleware, AuthenticatedRequest, rateLimitByKey } from "../auth/middleware";
-import { getDependencies } from "./dependencies";
+import { query, queryOne, queryMany } from "../database";
 import {
-  validateUserCreate,
-  validateUserUpdate,
-  validatePasswordUpdate,
-  validateLogin,
-  toUserResponse,
-} from "../models/user.model";
-import { generateToken } from "../auth/tokens";
-import { hashPassword, verifyPassword } from "../auth/password";
-import logger from "../utils/logger";
+  Reminder,
+  ReminderRow,
+  ReminderMemory,
+  ReminderCheckResult,
+  Contradiction,
+  ContradictionRow,
+  ContradictionCheckResult,
+  createReminder,
+  mapRowToReminder,
+  mapRowToContradiction,
+  emptyReminderCheck,
+  emptyContradictionCheck,
+  serializeReminderMemories,
+  deserializeReminderMemories,
+} from "../models/reminder.model";
+import { categorize, getCurrentStrength } from "./decay";
+import type { BucketRow } from "../models/bucket.model";
+import { v4 as uuidv4 } from "uuid";
 
-const router = Router();
-
-const loginLimiter = rateLimitByKey(8, 15 * 60 * 1000, (req) => {
-  const email =
-    typeof req.body?.email === "string"
-      ? req.body.email.trim().toLowerCase()
-      : "unknown";
-  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
-  return `login:${ip}:${email}`;
-});
-
-const registerLimiter = rateLimitByKey(5, 60 * 60 * 1000, (req) => {
-  const ip = req.ip ?? req.socket.remoteAddress ?? "unknown";
-  return `register:${ip}`;
-});
-
-function applySecureHeaders(res: Response): void {
-  res.setHeader("Cache-Control", "no-store");
-  res.setHeader("Pragma", "no-cache");
-  res.setHeader("X-Content-Type-Options", "nosniff");
+interface BucketWithComputedStrength {
+  bucketId: string;
+  canonical: string;
+  importance: number;
+  strength: number;
+  decayRate: number;
+  lastAccessed: Date;
+  computedStrength: number;
+  category: string;
+  daysSinceAccess: number;
 }
 
-router.post(
-  "/register",
-  registerLimiter,
-  async (req: AuthenticatedRequest, res: Response) => {
+export class ReminderEngine {
+  async scanForCriticalMemories(): Promise<ReminderMemory[]> {
     try {
-      applySecureHeaders(res);
+      const rows = await queryMany<BucketRow>(
+        "SELECT * FROM buckets WHERE importance >= $1",
+        [config.reminder.minImportance]
+      );
 
-      const { params, errors } = validateUserCreate(req.body);
+      const criticalMemories: ReminderMemory[] = [];
 
-      if (!params) {
-        res.status(400).json({ error: "Validation failed", details: errors });
-        return;
+      for (const row of rows) {
+        const strength = Number(row.strength);
+        const decayRate = Number(row.decay_rate);
+        const lastAccessed = new Date(row.last_accessed);
+        const now = Date.now();
+        const daysSinceAccess = (now - lastAccessed.getTime()) / (1000 * 60 * 60 * 24);
+        const computedStrength = getCurrentStrength({ strength, decayRate, lastAccessed });
+        const category = categorize(computedStrength);
+
+        if (category === "critical" || category === "forgotten") {
+          criticalMemories.push({
+            bucketId: row.bucket_id,
+            canonical: row.canonical,
+            strength: computedStrength,
+            importance: Number(row.importance),
+            daysSinceAccess: Math.round(daysSinceAccess * 10) / 10,
+          });
+        }
       }
 
-      const { userStore } = getDependencies();
-
-      const emailExists = await userStore.emailExists(params.email);
-
-      if (emailExists) {
-        res.status(409).json({ error: "Email already registered" });
-        return;
-      }
-
-      const passwordHash = await hashPassword(params.password!);
-
-      const user = await userStore.createUser({
-        ...params,
-        passwordHash,
+      criticalMemories.sort((a, b) => {
+        const importanceDiff = b.importance - a.importance;
+        if (importanceDiff !== 0) return importanceDiff;
+        return a.strength - b.strength;
       });
 
-      const token = generateToken(user.userId, user.email);
-
-      res.status(201).json({
-        user: toUserResponse(user),
-        token,
+      logger.debug("Critical memory scan complete", {
+        totalScanned: rows.length,
+        criticalFound: criticalMemories.length,
       });
+
+      return criticalMemories;
     } catch (error) {
-      const err = error as Error;
-
-      if (err.message.includes("Email already registered")) {
-        res.status(409).json({ error: err.message });
-        return;
-      }
-
-      logger.error("POST /users/register failed", {
-        email: typeof req.body?.email === "string" ? req.body.email.toLowerCase() : undefined,
-        error: err.message,
-      });
-
-      res.status(500).json({ error: "Failed to register user" });
-    }
-  }
-);
-
-router.post(
-  "/login",
-  loginLimiter,
-  async (req: AuthenticatedRequest, res: Response) => {
-    try {
-      applySecureHeaders(res);
-
-      const loginParams = validateLogin(req.body);
-
-      if (!loginParams) {
-        res.status(400).json({
-          error: "Invalid request",
-          details: "Required fields: email (string), password (string)",
-        });
-        return;
-      }
-
-      const { userStore } = getDependencies();
-
-      const user = await userStore.getUserByEmail(loginParams.email);
-
-      if (!user) {
-        res.status(401).json({ error: "Invalid email or password" });
-        return;
-      }
-
-      const passwordValid = await verifyPassword(loginParams.password, user.passwordHash);
-
-      if (!passwordValid) {
-        logger.warn("Failed login attempt", {
-          email: loginParams.email,
-          ip: req.ip ?? req.socket.remoteAddress ?? "unknown",
-        });
-
-        res.status(401).json({ error: "Invalid email or password" });
-        return;
-      }
-
-      const token = generateToken(user.userId, user.email);
-
-      res.status(200).json({
-        user: toUserResponse(user),
-        token,
-      });
-    } catch (error) {
-      logger.error("POST /users/login failed", {
-        email: typeof req.body?.email === "string" ? req.body.email.toLowerCase() : undefined,
+      logger.error("scanForCriticalMemories failed", {
         error: (error as Error).message,
       });
-
-      res.status(500).json({ error: "Failed to login" });
+      throw error;
     }
   }
-);
 
-router.get("/me", authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    applySecureHeaders(res);
-
-    const userId = req.userId!;
-    const { userStore } = getDependencies();
-
-    const user = await userStore.getUserById(userId);
-
-    if (!user) {
-      res.status(404).json({ error: "User not found" });
-      return;
+  async generateReminder(
+    userId: string,
+    criticalMemories: ReminderMemory[]
+  ): Promise<Reminder> {
+    if (criticalMemories.length === 0) {
+      throw new Error("Cannot generate reminder from empty critical memories");
     }
 
-    res.status(200).json({
-      user: toUserResponse(user),
-    });
-  } catch (error) {
-    logger.error("GET /users/me failed", {
-      userId: req.userId,
-      error: (error as Error).message,
-    });
+    const topMemories = criticalMemories.slice(0, config.reminder.maxTopicsShown);
+    const reminder = createReminder({ userId, memories: topMemories });
 
-    res.status(500).json({ error: "Failed to retrieve user profile" });
-  }
-});
-
-router.patch("/me", authMiddleware, async (req: AuthenticatedRequest, res: Response) => {
-  try {
-    applySecureHeaders(res);
-
-    const userId = req.userId!;
-
-    const { params, errors } = validateUserUpdate(req.body);
-
-    if (!params) {
-      res.status(400).json({ error: "Validation failed", details: errors });
-      return;
-    }
-
-    const { userStore } = getDependencies();
-
-    if (params.email) {
-      const emailExists = await userStore.emailExists(params.email);
-
-      if (emailExists) {
-        res.status(409).json({ error: "Email already registered" });
-        return;
-      }
-    }
-
-    const updated = await userStore.updateUser(userId, params);
-
-    if (!updated) {
-      res.status(404).json({ error: "User not found" });
-      return;
-    }
-
-    res.status(200).json({
-      user: toUserResponse(updated),
-    });
-  } catch (error) {
-    const err = error as Error;
-
-    if (err.message.includes("Email already registered")) {
-      res.status(409).json({ error: err.message });
-      return;
-    }
-
-    logger.error("PATCH /users/me failed", {
-      userId: req.userId,
-      error: err.message,
-    });
-
-    res.status(500).json({ error: "Failed to update user profile" });
-  }
-});
-
-router.patch(
-  "/me/password",
-  authMiddleware,
-  async (req: AuthenticatedRequest, res: Response) => {
     try {
-      applySecureHeaders(res);
+      const reminderId = uuidv4();
+      const memoriesJson = serializeReminderMemories(reminder.memories);
 
-      const userId = req.userId!;
+      await query(
+        `INSERT INTO reminders (reminder_id, user_id, message, memories, dismissed)
+         VALUES ($1, $2, $3, $4::jsonb, false)`,
+        [reminderId, userId, reminder.message, memoriesJson]
+      );
 
-      const { params, errors } = validatePasswordUpdate(req.body);
+      reminder.reminderId = reminderId;
 
-      if (!params) {
-        res.status(400).json({ error: "Validation failed", details: errors });
-        return;
-      }
-
-      const { userStore } = getDependencies();
-
-      const user = await userStore.getUserById(userId);
-
-      if (!user) {
-        res.status(404).json({ error: "User not found" });
-        return;
-      }
-
-      const currentValid = await verifyPassword(params.currentPassword, user.passwordHash);
-
-      if (!currentValid) {
-        res.status(401).json({ error: "Current password is incorrect" });
-        return;
-      }
-
-      const newHash = await hashPassword(params.newPassword);
-
-      const updated = await userStore.updatePassword(userId, newHash);
-
-      if (!updated) {
-        res.status(404).json({ error: "User not found" });
-        return;
-      }
-
-      res.status(200).json({
-        message: "Password updated successfully",
+      logger.info("Reminder generated", {
+        reminderId,
+        userId,
+        memoryCount: topMemories.length,
       });
+
+      return reminder;
     } catch (error) {
-      logger.error("PATCH /users/me/password failed", {
-        userId: req.userId,
+      logger.error("generateReminder failed", {
+        userId,
         error: (error as Error).message,
       });
-
-      res.status(500).json({ error: "Failed to update password" });
+      throw error;
     }
   }
-);
 
-export default router;
+  async checkForContradictions(
+    newLabel: string,
+    newDefinition: string,
+    existingBuckets: Array<{ bucketId: string; canonical: string; definition: string }>
+  ): Promise<Contradiction[]> {
+    const contradictions: Contradiction[] = [];
+    const normalizedNew = newLabel.toLowerCase().trim();
+
+    for (const bucket of existingBuckets) {
+      const normalizedExisting = bucket.canonical.toLowerCase().trim();
+
+      if (normalizedExisting !== normalizedNew) continue;
+      if (!bucket.definition || !newDefinition) continue;
+
+      const isContradiction = await this.detectContradiction(
+        bucket.definition,
+        newDefinition
+      );
+
+      if (isContradiction) {
+        contradictions.push({
+          contradictionId: "",
+          userId: "",
+          existingBucketId: bucket.bucketId,
+          newInformation: newDefinition,
+          conflictDescription: `Conflicting definitions for "${newLabel}": existing says "${bucket.definition.substring(0, 100)}", new says "${newDefinition.substring(0, 100)}"`,
+          resolved: false,
+          createdAt: new Date(),
+        });
+      }
+    }
+
+    return contradictions;
+  }
+
+  async storeContradiction(
+    contradiction: Contradiction,
+    userId: string
+  ): Promise<string> {
+    try {
+      const contradictionId = uuidv4();
+
+      await query(
+        `INSERT INTO contradictions (contradiction_id, user_id, existing_bucket_id, new_information, conflict_description, resolved)
+         VALUES ($1, $2, $3, $4, $5, false)`,
+        [
+          contradictionId,
+          userId,
+          contradiction.existingBucketId,
+          contradiction.newInformation,
+          contradiction.conflictDescription,
+        ]
+      );
+
+      logger.debug("Contradiction stored", {
+        contradictionId,
+        existingBucketId: contradiction.existingBucketId,
+      });
+
+      return contradictionId;
+    } catch (error) {
+      logger.error("storeContradiction failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getActiveReminders(userId: string): Promise<Reminder[]> {
+    try {
+      const rows = await queryMany<ReminderRow>(
+        `SELECT * FROM reminders
+         WHERE user_id = $1 AND dismissed = false
+         ORDER BY created_at DESC`,
+        [userId]
+      );
+
+      return rows.map((row) => {
+        const memories = deserializeReminderMemories(
+          (row as ReminderRow & { memories: string | null }).memories ?? null
+        );
+        return mapRowToReminder(row, memories);
+      });
+    } catch (error) {
+      logger.error("getActiveReminders failed", {
+        userId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getAllReminders(userId: string): Promise<Reminder[]> {
+    try {
+      const rows = await queryMany<ReminderRow>(
+        `SELECT * FROM reminders
+         WHERE user_id = $1
+         ORDER BY created_at DESC`,
+        [userId]
+      );
+
+      return rows.map((row) => {
+        const memories = deserializeReminderMemories(
+          (row as ReminderRow & { memories: string | null }).memories ?? null
+        );
+        return mapRowToReminder(row, memories);
+      });
+    } catch (error) {
+      logger.error("getAllReminders failed", {
+        userId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async dismissReminder(reminderId: string): Promise<boolean> {
+    try {
+      const result = await query(
+        `UPDATE reminders
+         SET dismissed = true
+         WHERE reminder_id = $1`,
+        [reminderId]
+      );
+
+      const dismissed = (result.rowCount ?? 0) > 0;
+
+      if (dismissed) {
+        logger.debug("Reminder dismissed", { reminderId });
+      }
+
+      return dismissed;
+    } catch (error) {
+      logger.error("dismissReminder failed", {
+        reminderId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async takeAction(reminderId: string, action: string): Promise<boolean> {
+    try {
+      const validActions = ["keep_active", "archive", "boost"];
+      if (!validActions.includes(action)) {
+        throw new Error(`Invalid action: ${action}. Must be one of: ${validActions.join(", ")}`);
+      }
+
+      const result = await query(
+        `UPDATE reminders
+         SET action_taken = $1, dismissed = true
+         WHERE reminder_id = $2`,
+        [action, reminderId]
+      );
+
+      return (result.rowCount ?? 0) > 0;
+    } catch (error) {
+      logger.error("takeAction failed", {
+        reminderId,
+        action,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async resolveContradiction(contradictionId: string): Promise<boolean> {
+    try {
+      const result = await query(
+        `UPDATE contradictions
+         SET resolved = true
+         WHERE contradiction_id = $1`,
+        [contradictionId]
+      );
+
+      return (result.rowCount ?? 0) > 0;
+    } catch (error) {
+      logger.error("resolveContradiction failed", {
+        contradictionId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getUnresolvedContradictions(userId: string): Promise<Contradiction[]> {
+    try {
+      const rows = await queryMany<ContradictionRow>(
+        `SELECT * FROM contradictions
+         WHERE user_id = $1 AND resolved = false
+         ORDER BY created_at DESC`,
+        [userId]
+      );
+
+      return rows.map(mapRowToContradiction);
+    } catch (error) {
+      logger.error("getUnresolvedContradictions failed", {
+        userId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async checkAndGenerate(userId: string): Promise<ReminderCheckResult> {
+    try {
+      const critical = await this.scanForCriticalMemories();
+
+      if (critical.length === 0) {
+        return emptyReminderCheck();
+      }
+
+      const recentReminders = await this.getActiveReminders(userId);
+      if (recentReminders.length > 0) {
+        const lastReminder = recentReminders[0];
+        const hoursSinceLastReminder =
+          (Date.now() - lastReminder.createdAt.getTime()) / (1000 * 60 * 60);
+
+        if (hoursSinceLastReminder < config.reminder.checkIntervalHours) {
+          logger.debug("Skipping reminder: too recent", {
+            hoursSinceLastReminder: Math.round(hoursSinceLastReminder * 10) / 10,
+            required: config.reminder.checkIntervalHours,
+          });
+          return {
+            hasReminders: true,
+            reminder: lastReminder,
+            criticalCount: critical.length,
+          };
+        }
+      }
+
+      const reminder = await this.generateReminder(userId, critical);
+
+      return {
+        hasReminders: true,
+        reminder,
+        criticalCount: critical.length,
+      };
+    } catch (error) {
+      logger.error("checkAndGenerate failed", {
+        userId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  private async detectContradiction(
+    existingDefinition: string,
+    newDefinition: string
+  ): Promise<boolean> {
+    const existingLower = existingDefinition.toLowerCase();
+    const newLower = newDefinition.toLowerCase();
+
+    if (existingLower === newLower) return false;
+
+    const negationPatterns = [
+      { positive: "is", negative: "is not" },
+      { positive: "can", negative: "cannot" },
+      { positive: "does", negative: "does not" },
+      { positive: "will", negative: "will not" },
+      { positive: "should", negative: "should not" },
+      { positive: "always", negative: "never" },
+      { positive: "increases", negative: "decreases" },
+      { positive: "enables", negative: "disables" },
+      { positive: "true", negative: "false" },
+      { positive: "correct", negative: "incorrect" },
+      { positive: "valid", negative: "invalid" },
+    ];
+
+    for (const pattern of negationPatterns) {
+      const existingHasPositive = existingLower.includes(pattern.positive);
+      const newHasNegative = newLower.includes(pattern.negative);
+      const existingHasNegative = existingLower.includes(pattern.negative);
+      const newHasPositive = newLower.includes(pattern.positive);
+
+      if ((existingHasPositive && newHasNegative) || (existingHasNegative && newHasPositive)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+}
+
+let reminderEngineInstance: ReminderEngine | null = null;
+
+export function getReminderEngine(): ReminderEngine {
+  if (!reminderEngineInstance) {
+    reminderEngineInstance = new ReminderEngine();
+  }
+  return reminderEngineInstance;
+}
+
+
+================================================================================
+FILE: src/storage/raw-store.ts
+================================================================================
+
+import { query, queryOne, queryMany } from "../database";
+import { S3StorageClient } from "./s3-client";
+import logger from "../utils/logger";
+
+const S3_KEY_PREFIX = "documents/";
+const S3_CONTENT_THRESHOLD = Infinity;
+
+interface DocumentRow {
+  document_id: string;
+  filename: string;
+  file_type: string;
+  content: string | null;
+  s3_key: string | null;
+  uploaded_at: Date;
+}
+
+interface ChunkRow {
+  chunk_id: string;
+  message_id: string;
+  text: string;
+  metadata: Record<string, unknown>;
+}
+
+interface MessageRow {
+  message_id: string;
+  session_id: string;
+  role: string;
+  content: string;
+  timestamp: Date;
+}
+
+interface AllChunkRow {
+  chunk_id: string;
+  message_id: string;
+  text: string;
+  metadata: Record<string, unknown>;
+}
+
+export class RawStore {
+  private readonly s3Client: S3StorageClient;
+  private readonly s3ContentThreshold: number;
+
+  constructor(s3Client?: S3StorageClient) {
+    this.s3Client = s3Client ?? new S3StorageClient();
+    this.s3ContentThreshold = S3_CONTENT_THRESHOLD;
+  }
+
+  async storeDocument(
+    filename: string,
+    fileType: string,
+    content: string
+  ): Promise<string> {
+    const shouldUseS3 =
+      Buffer.byteLength(content, "utf-8") > this.s3ContentThreshold;
+    if (shouldUseS3) {
+      return this.storeDocumentInS3(filename, fileType, content);
+    }
+    return this.storeDocumentInline(filename, fileType, content);
+  }
+
+  async getDocumentById(documentId: string): Promise<{
+    documentId: string;
+    filename: string;
+    fileType: string;
+    content: string;
+    s3Key: string | null;
+    uploadedAt: Date;
+  } | null> {
+    try {
+      const row = await queryOne<DocumentRow>(
+        `SELECT document_id, filename, file_type, content, s3_key, uploaded_at
+         FROM documents
+         WHERE document_id = $1`,
+        [documentId]
+      );
+      if (!row) return null;
+      let content: string;
+      if (row.s3_key && (!row.content || row.content.trim().length === 0)) {
+        content = await this.getContentFromS3(row.s3_key);
+      } else if (row.content) {
+        content = row.content;
+      } else {
+        content = "";
+      }
+      return {
+        documentId: row.document_id,
+        filename: row.filename,
+        fileType: row.file_type,
+        content,
+        s3Key: row.s3_key,
+        uploadedAt: new Date(row.uploaded_at),
+      };
+    } catch (error) {
+      logger.error("getDocumentById failed", {
+        documentId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getContentFromS3(s3Key: string): Promise<string> {
+    try {
+      const buffer = await this.s3Client.download(s3Key);
+      return buffer.toString("utf-8");
+    } catch (error) {
+      logger.error("getContentFromS3 failed", {
+        s3Key,
+        error: (error as Error).message,
+      });
+      throw new Error(`Failed to fetch document content from S3: ${s3Key}`);
+    }
+  }
+
+  async getAllDocuments(): Promise<
+    Array<{
+      documentId: string;
+      filename: string;
+      fileType: string;
+      uploadedAt: Date;
+    }>
+  > {
+    try {
+      const rows = await queryMany<DocumentRow>(
+        `SELECT document_id, filename, file_type, uploaded_at
+         FROM documents
+         ORDER BY uploaded_at DESC`
+      );
+      return rows.map((row) => ({
+        documentId: row.document_id,
+        filename: row.filename,
+        fileType: row.file_type,
+        uploadedAt: new Date(row.uploaded_at),
+      }));
+    } catch (error) {
+      logger.error("getAllDocuments failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  
+  async getStorageUsageFromDb(): Promise<{
+    totalSizeBytes: number;
+    objectCount: number;
+  }> {
+    try {
+      const row = await queryOne<{ bytes: string | number; count: string | number }>(
+        `SELECT COALESCE(SUM(OCTET_LENGTH(content)), 0) AS bytes,
+                COUNT(*) AS count
+         FROM documents`
+      );
+      const bytes = row?.bytes != null ? Number(row.bytes) : 0;
+      const count = row?.count != null ? Number(row.count) : 0;
+      return {
+        totalSizeBytes: Number.isFinite(bytes) ? bytes : 0,
+        objectCount: Number.isFinite(count) ? count : 0,
+      };
+    } catch (error) {
+      logger.error("getStorageUsageFromDb failed", {
+        error: (error as Error).message,
+      });
+      return { totalSizeBytes: 0, objectCount: 0 };
+    }
+  }
+
+  async deleteDocument(documentId: string): Promise<void> {
+    try {
+      const row = await queryOne<{ s3_key: string | null }>(
+        "SELECT s3_key FROM documents WHERE document_id = $1",
+        [documentId]
+      );
+      if (row?.s3_key) {
+        try {
+          await this.s3Client.delete(row.s3_key);
+        } catch (s3Error) {
+          logger.warn("Failed to delete S3 object", {
+            s3Key: row.s3_key,
+            error: (s3Error as Error).message,
+          });
+        }
+      }
+      await query("DELETE FROM documents WHERE document_id = $1", [documentId]);
+    } catch (error) {
+      logger.error("deleteDocument failed", {
+        documentId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getChunksByDocumentId(documentId: string): Promise<
+    Array<{
+      chunkId: string;
+      text: string;
+      metadata: Record<string, unknown>;
+    }>
+  > {
+    try {
+      const rows = await queryMany<ChunkRow>(
+        `SELECT chunk_id, message_id, text, metadata
+         FROM raw_chunks
+         WHERE message_id = $1
+         ORDER BY chunk_id`,
+        [documentId]
+      );
+      return rows.map((row) => ({
+        chunkId: row.chunk_id,
+        text: row.text,
+        metadata: row.metadata ?? {},
+      }));
+    } catch (error) {
+      logger.error("getChunksByDocumentId failed", {
+        documentId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async storeMessage(
+    sessionId: string,
+    role: string,
+    content: string,
+    timestamp: string
+  ): Promise<string> {
+    try {
+      const row = await queryOne<{ message_id: string }>(
+        `INSERT INTO messages (session_id, role, content, timestamp)
+         VALUES ($1, $2, $3, $4)
+         RETURNING message_id`,
+        [sessionId, role, content, timestamp]
+      );
+      return row?.message_id ?? "";
+    } catch (error) {
+      logger.error("storeMessage failed", {
+        sessionId,
+        role,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async storeChunk(
+    messageId: string,
+    text: string,
+    metadata: Record<string, unknown>
+  ): Promise<void> {
+    try {
+      await query(
+        `INSERT INTO raw_chunks (message_id, text, metadata)
+         VALUES ($1, $2, $3)`,
+        [messageId, text, JSON.stringify(metadata)]
+      );
+    } catch (error) {
+      logger.error("storeChunk failed", {
+        messageId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getMessageHistory(sessionId: string): Promise<
+    Array<{
+      messageId: string;
+      role: string;
+      content: string;
+      timestamp: string;
+    }>
+  > {
+    try {
+      const rows = await queryMany<MessageRow>(
+        `SELECT message_id, session_id, role, content, timestamp
+         FROM messages
+         WHERE session_id = $1
+         ORDER BY timestamp ASC`,
+        [sessionId]
+      );
+      return rows.map((row) => ({
+        messageId: row.message_id,
+        role: row.role,
+        content: row.content,
+        timestamp: new Date(row.timestamp).toISOString(),
+      }));
+    } catch (error) {
+      logger.error("getMessageHistory failed", {
+        sessionId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getChunksByMessageId(messageId: string): Promise<
+    Array<{
+      chunkId: string;
+      text: string;
+      metadata: Record<string, unknown>;
+    }>
+  > {
+    try {
+      const rows = await queryMany<ChunkRow>(
+        `SELECT chunk_id, message_id, text, metadata
+         FROM raw_chunks
+         WHERE message_id = $1
+         ORDER BY chunk_id`,
+        [messageId]
+      );
+      return rows.map((row) => ({
+        chunkId: row.chunk_id,
+        text: row.text,
+        metadata: row.metadata ?? {},
+      }));
+    } catch (error) {
+      logger.error("getChunksByMessageId failed", {
+        messageId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getAllChunks(): Promise<
+    Array<{
+      chunkId: string;
+      messageId: string;
+      text: string;
+      metadata: Record<string, unknown>;
+    }>
+  > {
+    try {
+      const rows = await queryMany<AllChunkRow>(
+        `SELECT chunk_id, message_id, text, metadata
+         FROM raw_chunks
+         ORDER BY chunk_id`
+      );
+      return rows.map((row) => ({
+        chunkId: row.chunk_id,
+        messageId: row.message_id,
+        text: row.text,
+        metadata: row.metadata ?? {},
+      }));
+    } catch (error) {
+      logger.error("getAllChunks failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getTotalMessages(): Promise<number> {
+    try {
+      const row = await queryOne<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM messages"
+      );
+      return row?.count ?? 0;
+    } catch (error) {
+      logger.error("getTotalMessages failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getTotalDocuments(): Promise<number> {
+    try {
+      const row = await queryOne<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM documents"
+      );
+      return row?.count ?? 0;
+    } catch (error) {
+      logger.error("getTotalDocuments failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getTotalSessions(): Promise<number> {
+    try {
+      const row = await queryOne<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM sessions"
+      );
+      return row?.count ?? 0;
+    } catch (error) {
+      logger.error("getTotalSessions failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  private async storeDocumentInline(
+    filename: string,
+    fileType: string,
+    content: string
+  ): Promise<string> {
+    const row = await queryOne<{ document_id: string }>(
+      `INSERT INTO documents (filename, file_type, content, s3_key)
+       VALUES ($1, $2, $3, NULL)
+       RETURNING document_id`,
+      [filename, fileType, content]
+    );
+    return row?.document_id ?? "";
+  }
+
+  private async storeDocumentInS3(
+    filename: string,
+    fileType: string,
+    content: string
+  ): Promise<string> {
+    const timestamp = Date.now();
+    const safeFilename = filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const s3Key = `${S3_KEY_PREFIX}${timestamp}_${safeFilename}`;
+    try {
+      await this.s3Client.upload(
+        s3Key,
+        Buffer.from(content, "utf-8"),
+        "text/plain"
+      );
+      const contentPreview = content.substring(0, 500);
+      const row = await queryOne<{ document_id: string }>(
+        `INSERT INTO documents (filename, file_type, content, s3_key)
+         VALUES ($1, $2, $3, $4)
+         RETURNING document_id`,
+        [filename, fileType, contentPreview, s3Key]
+      );
+      logger.info("Document stored in S3", {
+        filename,
+        s3Key,
+        contentSize: Buffer.byteLength(content, "utf-8"),
+      });
+      return row?.document_id ?? "";
+    } catch (error) {
+      logger.error("storeDocumentInS3 failed, falling back to inline", {
+        filename,
+        s3Key,
+        error: (error as Error).message,
+      });
+      return this.storeDocumentInline(filename, fileType, content);
+    }
+  }
+}
+
+let rawStoreInstance: RawStore | null = null;
+
+export function getRawStore(): RawStore {
+  if (!rawStoreInstance) {
+    rawStoreInstance = new RawStore();
+  }
+  return rawStoreInstance;
+}
 
 
 ================================================================================

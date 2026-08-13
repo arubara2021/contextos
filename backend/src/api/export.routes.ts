@@ -4,20 +4,33 @@ import { getDependencies } from "./dependencies";
 import logger from "../utils/logger";
 
 const router = Router();
-
 router.get(
   "/memories",
   authMiddleware,
-  async (_req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response) => {
     try {
+      const userId = req.userId!;
       const { bucketStore, relationshipStore, embeddingStore, strengthTracker } =
         getDependencies();
-
-      const [buckets, relationships, embeddingCount] = await Promise.all([
-        bucketStore.getAllBuckets(),
+      const [buckets, allRelationships, embeddingCount] = await Promise.all([
+        bucketStore.getAllBuckets(undefined, userId),
         relationshipStore.getAll(),
         embeddingStore.getCount(),
       ]);
+      const bucketIdSet = new Set(buckets.map((b) => b.bucketId));
+      const canonicalSet = new Set(
+        buckets.map((b) => String(b.canonical || "").toLowerCase())
+      );
+      const relationships = allRelationships.filter((rel: any) => {
+        const sourceId = rel.sourceBucketId ?? rel.source_bucket_id ?? null;
+        const targetId = rel.targetBucketId ?? rel.target_bucket_id ?? null;
+        if (sourceId && targetId) {
+          return bucketIdSet.has(sourceId) && bucketIdSet.has(targetId);
+        }
+        const sourceKey = String(rel.sourceBucket ?? rel.source_bucket ?? "").toLowerCase();
+        const targetKey = String(rel.targetBucket ?? rel.target_bucket ?? "").toLowerCase();
+        return canonicalSet.has(sourceKey) && canonicalSet.has(targetKey);
+      });
 
       const enriched = buckets.map((bucket) => {
         const status = strengthTracker.getStatus({
@@ -168,10 +181,10 @@ router.post(
       } = getDependencies();
 
       const [buckets, relationships, sessions, documents, embeddingCount] = await Promise.all([
-        bucketStore.getAllBuckets(),
-        relationshipStore.getAll(),
+        bucketStore.getAllBuckets(undefined, userId),
+        relationshipStore.getAll(userId),
         sessionStore.getSessionsByUser(userId),
-        rawStore.getAllDocuments(),
+        rawStore.getAllDocuments(userId),
         embeddingStore.getCount(),
       ]);
 
@@ -290,11 +303,11 @@ router.get(
         totalDocuments,
         embeddingCount,
       ] = await Promise.all([
-        bucketStore.getTotalCount(),
-        relationshipStore.getTotalCount(),
-        rawStore.getTotalMessages(),
+        bucketStore.getTotalCount(userId),
+        relationshipStore.getTotalCount(userId),
+        rawStore.getTotalMessages(userId),
         sessionStore.getTotalCount(userId),
-        rawStore.getTotalDocuments(),
+        rawStore.getTotalDocuments(userId),
         embeddingStore.getCount(),
       ]);
 
