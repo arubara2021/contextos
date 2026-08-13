@@ -112,16 +112,31 @@ export function useAuth() {
           initializing: false,
         }));
       })
-      .catch(() => {
+      .catch((err) => {
         if (cancelled) return;
-        clearToken();
-        setState({
-          user: null,
-          token: null,
-          initializing: false,
-          authenticating: false,
-          error: null,
-        });
+
+        // ONLY clear token if it's a hard 401 Unauthorized.
+        // If it's a network timeout, Vercel cold start, or 500 error, keep the token 
+        // so the user isn't forcefully logged out when clicking the back button.
+        const is401 = err instanceof ApiError && err.status === 401;
+
+        if (is401) {
+          clearToken();
+          setState({
+            user: null,
+            token: null,
+            initializing: false,
+            authenticating: false,
+            error: null,
+          });
+        } else {
+          // Keep session alive despite backend hiccup
+          setState((current) => ({
+            ...current,
+            initializing: false,
+            error: null,
+          }));
+        }
       });
 
     return () => {

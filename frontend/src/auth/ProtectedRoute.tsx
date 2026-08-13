@@ -1,44 +1,36 @@
-import { Navigate, Outlet } from "react-router-dom";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuthContext } from "./AuthProvider";
-
-import { Logo } from "../components/shared/Logo";
+import { ROUTES } from "../constants";
+import { getToken, isTokenExpired } from "../api";
 
 export function ProtectedRoute() {
   const { isAuthenticated, initializing } = useAuthContext();
+  const location = useLocation();
 
+  const token = getToken();
+  const hasUsableToken = Boolean(token) && !isTokenExpired();
+
+  const restoring = (
+    <div className="flex h-[100dvh] items-center justify-center bg-void">
+      <div className="flex flex-col items-center gap-4">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-ember/30 border-t-ember" />
+        <p className="font-mono text-[10px] uppercase tracking-[0.32em] text-stone">
+          Restoring session…
+        </p>
+      </div>
+    </div>
+  );
 
   if (initializing) {
-    return (
-      <div className="relative flex h-[100dvh] items-center justify-center overflow-hidden bg-void">
-        <div className="pointer-events-none absolute inset-0 bg-ember-radial opacity-80" />
-        <div className="pointer-events-none absolute inset-0 opacity-60" style={{
-          background:
-            "radial-gradient(620px 420px at 18% 18%, rgb(143 216 210 / 0.05), transparent 62%), radial-gradient(520px 360px at 82% 78%, rgb(255 138 61 / 0.08), transparent 58%)",
-        }} />
+    return restoring;
+  }
 
-        <div className="fx-rise relative flex flex-col items-center gap-6 px-6 text-center">
-          <div className="relative">
-            <span className="fx-pulse-ring absolute inset-0 rounded-full text-ember" />
-            <div className="fx-breathe">
-              <Logo size={56} animated />
-            </div>
-          </div>
-
-          <div>
-            <p className="font-mono text-[10px] uppercase tracking-[0.32em] text-stone">
-              Opening the archive
-            </p>
-            <p className="mt-2 font-mono text-[9px] uppercase tracking-[0.18em] text-stone/50">
-              Verifying session
-            </p>
-          </div>
-        </div>
-      </div>
-    );
+  if (!isAuthenticated && hasUsableToken) {
+    return restoring;
   }
 
   if (!isAuthenticated) {
-    return <Navigate to="/login" state={{ from: location.pathname }} />;
+    return <Navigate to={ROUTES.login} state={{ from: location.pathname }} />;
   }
 
   return <Outlet />;

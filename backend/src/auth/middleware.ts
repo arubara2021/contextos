@@ -21,25 +21,33 @@ const DEV_BYPASS_EMAIL = process.env.DEV_BYPASS_EMAIL ?? "demo@contextos.local";
 let devUserCache: { userId: string; email: string } | null | undefined = undefined;
 
 async function resolveDevUser(): Promise<{ userId: string; email: string } | null> {
-  if (devUserCache === null) {
-    return null;
-  }
-
   if (devUserCache) {
     return devUserCache;
   }
 
   try {
-    const user = await getUserStore().getUserByEmail(DEV_BYPASS_EMAIL);
+    let user = await getUserStore().getUserByEmail(DEV_BYPASS_EMAIL);
 
     if (!user) {
-      devUserCache = null;
-
-      logger.warn("Dev bypass active but demo user not found — run seed-demo", {
-        email: DEV_BYPASS_EMAIL,
-      });
-
-      return null;
+      logger.info("Dev bypass: demo user not found, creating...");
+      try {
+        user = await getUserStore().createUser({
+          email: DEV_BYPASS_EMAIL,
+          passwordHash: "dev-bypass-no-login",
+          displayName: "Vera Lindqvist",
+        });
+        logger.info("Dev bypass: demo user created", { userId: user.userId });
+      } catch (createErr) {
+        // User might have been created by a race condition, try again
+        user = await getUserStore().getUserByEmail(DEV_BYPASS_EMAIL);
+        if (!user) {
+          devUserCache = null;
+          logger.error("Dev bypass: failed to create demo user", {
+            error: (createErr as Error).message,
+          });
+          return null;
+        }
+      }
     }
 
     devUserCache = {
@@ -55,11 +63,9 @@ async function resolveDevUser(): Promise<{ userId: string; email: string } | nul
     return devUserCache;
   } catch (error) {
     devUserCache = null;
-
     logger.error("Dev bypass user resolution failed", {
       error: (error as Error).message,
     });
-
     return null;
   }
 }

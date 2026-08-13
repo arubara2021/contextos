@@ -329,6 +329,20 @@ async function initializeVectorIndex(): Promise<void> {
 }
 
 export async function initDatabase(): Promise<void> {
+  // Quick check: if the users table exists, skip all schema creation
+  try {
+    const check = await query(
+      "SELECT table_name FROM information_schema.tables WHERE table_name = 'users' AND table_schema = 'public' LIMIT 1"
+    );
+    if (check.rows.length > 0) {
+      logger.info("Database schema already exists, skipping init");
+      await initializeVectorIndex();
+      return;
+    }
+  } catch {
+    // If check fails, fall through to full init
+  }
+
   const schemaPath = join(__dirname, "scripts", "init-db.sql");
 
   let schema: string;
@@ -337,12 +351,10 @@ export async function initDatabase(): Promise<void> {
     schema = readFileSync(schemaPath, "utf-8");
   } catch (error) {
     const err = error as Error;
-
     logger.error("Failed to read schema file", {
       path: schemaPath,
       error: err.message,
     });
-
     throw new Error(
       `Cannot read database schema at ${schemaPath}: ${err.message}`
     );
@@ -367,7 +379,6 @@ export async function initDatabase(): Promise<void> {
       executed++;
     } catch (error) {
       const err = error as Error;
-
       if (
         err.message.includes("already exists") ||
         err.message.includes("duplicate") ||
@@ -375,21 +386,13 @@ export async function initDatabase(): Promise<void> {
           err.message.includes("already exists"))
       ) {
         skipped++;
-
-        logger.debug("Schema object already exists, skipping", {
-          preview: previewQuery(statement),
-        });
-
         continue;
       }
-
       failed++;
-
       logger.error("Schema statement failed", {
         statement: previewQuery(statement),
         error: err.message,
       });
-
       throw error;
     }
   }

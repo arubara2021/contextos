@@ -1,3 +1,29 @@
+================================================================================
+CONTEXTOS FRONTEND CODE DUMP
+================================================================================
+Total files: 7
+================================================================================
+
+
+================================================================================
+FILE: vercel.json
+================================================================================
+
+{
+  "framework": "vite",
+  "buildCommand": "npm run build",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
+}
+
+
+
+================================================================================
+FILE: src/api.ts
+================================================================================
+
 import type {
   ApiErrorBody,
   AuthResponse,
@@ -905,3 +931,863 @@ export const api = {
     },
   },
 };
+
+
+
+================================================================================
+FILE: src/hooks/useAuth.ts
+================================================================================
+
+import { useCallback, useEffect, useState } from "react";
+import {
+  api,
+  ApiError,
+  clearToken,
+  getStoredUser,
+  getToken,
+  isTokenExpired,
+  setStoredUser,
+  setToken,
+  UNAUTHORIZED_EVENT,
+} from "../api";
+import type { User } from "../types";
+
+const DEV_BYPASS_AUTH = import.meta.env.VITE_DEV_BYPASS === "true";
+const DEV_TOKEN = "dev-bypass-token";
+const DEV_USER: User = {
+  userId: "dev-user-00000000-0000-0000-0000-000000000000",
+  email: "demo@contextos.local",
+  displayName: "Vera Lindqvist",
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
+if (DEV_BYPASS_AUTH) {
+  setToken(DEV_TOKEN);
+  setStoredUser(DEV_USER);
+}
+
+interface AuthState {
+  user: User | null;
+  token: string | null;
+  initializing: boolean;
+  authenticating: boolean;
+  error: string | null;
+}
+
+function createInitialState(): AuthState {
+  if (DEV_BYPASS_AUTH) {
+    return {
+      user: DEV_USER,
+      token: DEV_TOKEN,
+      initializing: false,
+      authenticating: false,
+      error: null,
+    };
+  }
+
+  const storedToken = getToken();
+  if (storedToken && storedToken === "dev-bypass-token") {
+    clearToken();
+  }
+
+  const token = getToken();
+  const expired = !token || isTokenExpired();
+  return {
+    user: expired ? null : getStoredUser(),
+    token: expired ? null : token,
+    initializing: !expired && Boolean(token),
+    authenticating: false,
+    error: null,
+  };
+}
+
+export function useAuth() {
+  const [state, setState] = useState<AuthState>(createInitialState);
+
+  useEffect(() => {
+    if (DEV_BYPASS_AUTH) {
+      return;
+    }
+
+    let cancelled = false;
+
+    const onUnauthorized = () => {
+      if (!cancelled) {
+        setState({
+          user: null,
+          token: null,
+          initializing: false,
+          authenticating: false,
+          error: null,
+        });
+      }
+    };
+
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+
+    if (!getToken() || isTokenExpired()) {
+      clearToken();
+      setState({
+        user: null,
+        token: null,
+        initializing: false,
+        authenticating: false,
+        error: null,
+      });
+      return () => {
+        window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+      };
+    }
+
+    api.auth
+      .me()
+      .then(({ user }) => {
+        if (cancelled) return;
+        setStoredUser(user);
+        setState((current) => ({
+          ...current,
+          user,
+          token: getToken(),
+          initializing: false,
+        }));
+      })
+      .catch(() => {
+        if (cancelled) return;
+        clearToken();
+        setState({
+          user: null,
+          token: null,
+          initializing: false,
+          authenticating: false,
+          error: null,
+        });
+      });
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    };
+  }, []);
+
+  const login = useCallback(
+    async (email: string, password: string, remember = true) => {
+      if (DEV_BYPASS_AUTH) {
+        setToken(DEV_TOKEN);
+        setStoredUser(DEV_USER);
+        setState((current) => ({
+          ...current,
+          user: DEV_USER,
+          token: DEV_TOKEN,
+          authenticating: false,
+          error: null,
+        }));
+        return DEV_USER;
+      }
+
+      setState((current) => ({
+        ...current,
+        authenticating: true,
+        error: null,
+      }));
+
+      try {
+        const normalizedEmail = email.trim().toLowerCase();
+        const { user, token } = await api.auth.login(normalizedEmail, password);
+        setToken(token, remember);
+        setStoredUser(user, remember);
+        setState((current) => ({
+          ...current,
+          user,
+          token,
+          authenticating: false,
+          error: null,
+        }));
+        return user;
+      } catch (error) {
+        const message =
+          error instanceof ApiError
+            ? error.status === 429
+              ? "Too many attempts. Please wait and try again."
+              : error.message
+            : "Login failed";
+        setState((current) => ({
+          ...current,
+          authenticating: false,
+          error: message,
+        }));
+        throw error;
+      }
+    },
+    []
+  );
+
+  const register = useCallback(
+    async (email: string, password: string, displayName: string) => {
+      if (DEV_BYPASS_AUTH) {
+        const user = {
+          ...DEV_USER,
+          displayName: displayName.trim() || DEV_USER.displayName,
+          email: email.trim().toLowerCase(),
+        };
+        setToken(DEV_TOKEN);
+        setStoredUser(user);
+        setState((current) => ({
+          ...current,
+          user,
+          token: DEV_TOKEN,
+          authenticating: false,
+          error: null,
+        }));
+        return user;
+      }
+
+      setState((current) => ({
+        ...current,
+        authenticating: true,
+        error: null,
+      }));
+
+      try {
+        const normalizedEmail = email.trim().toLowerCase();
+        const { user, token } = await api.auth.register(
+          normalizedEmail,
+          password,
+          displayName.trim()
+        );
+        setToken(token, true);
+        setStoredUser(user, true);
+        setState((current) => ({
+          ...current,
+          user,
+          token,
+          authenticating: false,
+          error: null,
+        }));
+        return user;
+      } catch (error) {
+        const message =
+          error instanceof ApiError
+            ? error.status === 429
+              ? "Too many attempts. Please wait and try again."
+              : error.message
+            : "Registration failed";
+        setState((current) => ({
+          ...current,
+          authenticating: false,
+          error: message,
+        }));
+        throw error;
+      }
+    },
+    []
+  );
+
+  const logout = useCallback(() => {
+    if (DEV_BYPASS_AUTH) return;
+    clearToken();
+    setState({
+      user: null,
+      token: null,
+      initializing: false,
+      authenticating: false,
+      error: null,
+    });
+  }, []);
+
+  const updateProfile = useCallback(
+    async (params: { email?: string; displayName?: string }) => {
+      if (DEV_BYPASS_AUTH) {
+        const user = { ...DEV_USER, ...params } as User;
+        setStoredUser(user);
+        setState((current) => ({ ...current, user }));
+        return user;
+      }
+      const { user } = await api.auth.updateMe(params);
+      setStoredUser(user);
+      setState((current) => ({ ...current, user }));
+      return user;
+    },
+    []
+  );
+
+  const updatePassword = useCallback(
+    (currentPassword: string, newPassword: string) => {
+      if (DEV_BYPASS_AUTH) {
+        return Promise.resolve({ message: "Password updated (dev mode)" });
+      }
+      return api.auth.updatePassword(currentPassword, newPassword);
+    },
+    []
+  );
+
+  const clearError = useCallback(() => {
+    setState((current) => ({ ...current, error: null }));
+  }, []);
+
+  return {
+    ...state,
+    isAuthenticated: Boolean(state.token && state.user),
+    login,
+    register,
+    logout,
+    updateProfile,
+    updatePassword,
+    clearError,
+  };
+}
+
+
+================================================================================
+FILE: src/hooks/useDemo.ts
+================================================================================
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, setToken, setStoredUser, clearToken } from "../api";
+
+const DEMO_STORAGE_KEY = "contextos.demo";
+
+interface DemoState {
+  isDemo: boolean;
+  expiresAt: string | null;
+  remainingMs: number;
+  minting: boolean;
+  error: string | null;
+}
+
+interface StoredDemo {
+  expiresAt: string;
+  userId: string;
+}
+
+function getStoredDemo(): StoredDemo | null {
+  try {
+    const raw = localStorage.getItem(DEMO_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredDemo;
+    if (new Date(parsed.expiresAt).getTime() <= Date.now()) {
+      localStorage.removeItem(DEMO_STORAGE_KEY);
+      clearToken();
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function useDemo() {
+  const [state, setState] = useState<DemoState>(() => {
+    const stored = getStoredDemo();
+    if (stored) {
+      return {
+        isDemo: true,
+        expiresAt: stored.expiresAt,
+        remainingMs: Math.max(0, new Date(stored.expiresAt).getTime() - Date.now()),
+        minting: false,
+        error: null,
+      };
+    }
+    return { isDemo: false, expiresAt: null, remainingMs: 0, minting: false, error: null };
+  });
+
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearDemo = useCallback(() => {
+    localStorage.removeItem(DEMO_STORAGE_KEY);
+    clearToken();
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    setState({ isDemo: false, expiresAt: null, remainingMs: 0, minting: false, error: null });
+  }, []);
+
+  useEffect(() => {
+    if (!state.isDemo || !state.expiresAt) return;
+
+    const tick = () => {
+      const remaining = new Date(state.expiresAt!).getTime() - Date.now();
+      if (remaining <= 0) {
+        clearDemo();
+        window.location.href = "/";
+        return;
+      }
+      setState((s) => ({ ...s, remainingMs: remaining }));
+    };
+
+    tick();
+    intervalRef.current = setInterval(tick, 1000);
+
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [state.isDemo, state.expiresAt, clearDemo]);
+
+  const launchSandbox = useCallback(async (): Promise<boolean> => {
+    setState((s) => ({ ...s, minting: true, error: null }));
+
+    try {
+      const data = await api.demo.startSandbox();
+
+      setToken(data.token);
+      setStoredUser(data.user);
+      localStorage.setItem(
+        DEMO_STORAGE_KEY,
+        JSON.stringify({ expiresAt: data.expiresAt, userId: data.user.userId })
+      );
+
+      setState({
+        isDemo: true,
+        expiresAt: data.expiresAt,
+        remainingMs: data.ttlMinutes * 60 * 1000,
+        minting: false,
+        error: null,
+      });
+
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to launch sandbox";
+      setState((s) => ({ ...s, minting: false, error: message }));
+      return false;
+    }
+  }, []);
+
+  const formattedRemaining = (() => {
+    const totalSec = Math.floor(state.remainingMs / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  })();
+
+  return {
+    ...state,
+    formattedRemaining,
+    launchSandbox,
+    clearDemo,
+    isDemoActive: state.isDemo && state.remainingMs > 0,
+  };
+}
+
+
+================================================================================
+FILE: src/auth/ProtectedRoute.tsx
+================================================================================
+
+import { Navigate, Outlet, useLocation } from "react-router-dom";
+import { useAuthContext } from "./AuthProvider";
+import { ROUTES } from "../constants";
+import { getToken, isTokenExpired } from "../api";
+
+export function ProtectedRoute() {
+  const { isAuthenticated, initializing } = useAuthContext();
+  const location = useLocation();
+
+  const token = getToken();
+  const hasUsableToken = Boolean(token) && !isTokenExpired();
+
+  const restoring = (
+    <div className="flex h-[100dvh] items-center justify-center bg-void">
+      <div className="flex flex-col items-center gap-4">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-ember/30 border-t-ember" />
+        <p className="font-mono text-[10px] uppercase tracking-[0.32em] text-stone">
+          Restoring session…
+        </p>
+      </div>
+    </div>
+  );
+
+  if (initializing) {
+    return restoring;
+  }
+
+  if (!isAuthenticated && hasUsableToken) {
+    return restoring;
+  }
+
+  if (!isAuthenticated) {
+    return <Navigate to={ROUTES.login} state={{ from: location.pathname }} />;
+  }
+
+  return <Outlet />;
+}
+
+
+================================================================================
+FILE: src/auth/LoginPage.tsx
+================================================================================
+
+import { useEffect, useState, type FormEvent } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useAuthContext } from "./AuthProvider";
+import { ROUTES } from "../constants";
+import { AuthLayout } from "../components/auth/AuthLayout";
+import { AuthBrandScene } from "../components/auth/AuthBrandScene";
+import { AuthFormPanel } from "../components/auth/AuthFormPanel";
+import { AuthField } from "../components/auth/AuthField";
+import { AuthPasswordField } from "../components/auth/AuthPasswordField";
+
+export function LoginPage() {
+  const { login, isAuthenticated, authenticating, error, clearError } =
+    useAuthContext();
+
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<{
+    email?: string;
+    password?: string;
+  }>({});
+
+  const from = (location.state as { from?: string } | null)?.from ?? ROUTES.dive;
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate(from, { replace: true });
+    }
+  }, [isAuthenticated, navigate, from]);
+
+  const validate = () => {
+    const next: {
+      email?: string;
+      password?: string;
+    } = {};
+
+    const normalizedEmail = email.trim();
+
+    if (!normalizedEmail) {
+      next.email = "Email is required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      next.email = "Enter a valid email address";
+    }
+
+    if (!password) {
+      next.password = "Password is required";
+    }
+
+    setFieldErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    clearError();
+
+    if (!validate()) {
+      return;
+    }
+
+    try {
+      await login(email.trim(), password);
+      navigate(from, { replace: true });
+    } catch {
+      return;
+    }
+  };
+
+  if (isAuthenticated) {
+    return null;
+  }
+
+  return (
+    <AuthLayout
+      brand={
+        <AuthBrandScene
+          kicker="Persistent memory for AI"
+          title={
+            <>
+              Memories that don't{" "}
+              <em className="font-normal italic text-ember-hi">fade.</em>
+            </>
+          }
+          subtitle="Documents and conversations become living knowledge — extracted once, retrieved forever, and honest about what is slipping away."
+          chips={["Extract once", "Retrieve forever", "Decay honestly"]}
+        />
+      }
+    >
+      <AuthFormPanel
+        kicker="Sign in"
+        title={
+          <>
+            Welcome <em className="font-normal italic text-ember-hi">back.</em>
+          </>
+        }
+        subtitle="Your archive kept everything. It waited."
+      >
+        <form onSubmit={handleSubmit} className="flex flex-col gap-5" noValidate>
+          {error && (
+            <div
+              className="fx-rise rounded-2xl border border-flare/40 bg-flare/10 px-4 py-3 text-[13px] text-flare"
+              role="alert"
+            >
+              {error}
+            </div>
+          )}
+
+          <AuthField
+            label="Email"
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            placeholder="you@archive.dev"
+            value={email}
+            onChange={(event) => {
+              setEmail(event.target.value);
+
+              if (fieldErrors.email) {
+                setFieldErrors((current) => ({ ...current, email: undefined }));
+              }
+
+              if (error) {
+                clearError();
+              }
+            }}
+            error={fieldErrors.email}
+          />
+
+          <AuthPasswordField
+            label="Password"
+            autoComplete="current-password"
+            placeholder="••••••••••"
+            value={password}
+            onChange={(event) => {
+              setPassword(event.target.value);
+
+              if (fieldErrors.password) {
+                setFieldErrors((current) => ({
+                  ...current,
+                  password: undefined,
+                }));
+              }
+
+              if (error) {
+                clearError();
+              }
+            }}
+            error={fieldErrors.password}
+          />
+
+          <button
+            type="submit"
+            className="btn btn-primary h-[52px] w-full rounded-2xl text-[15px]"
+            disabled={authenticating}
+          >
+            {authenticating ? (
+              <span className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 animate-ping rounded-full bg-current" />
+                Opening the archive…
+              </span>
+            ) : (
+              "Enter the archive"
+            )}
+          </button>
+
+          <div className="form-divider">New here</div>
+
+          <Link
+            to={ROUTES.signup}
+            className="btn btn-ghost h-[48px] w-full rounded-2xl"
+          >
+            Create an account
+          </Link>
+        </form>
+      </AuthFormPanel>
+    </AuthLayout>
+  );
+}
+
+
+================================================================================
+FILE: src/components/landing/DemoEntry.tsx
+================================================================================
+
+import { useEffect, useRef, useState } from "react";
+import { useDemo } from "../../hooks/useDemo";
+import { ROUTES } from "../../constants";
+import { Icon } from "../shared/Icon";
+
+const FEATURES = [
+  {
+    icon: "upload" as const,
+    title: "Upload once",
+    body: "PDF, DOCX, markdown, notes, and code are parsed and distilled a single time.",
+  },
+  {
+    icon: "dive" as const,
+    title: "Chat with memory",
+    body: "Relevant memories are injected before the answer forms, with a visible trace.",
+  },
+  {
+    icon: "cortex" as const,
+    title: "Watch it wire",
+    body: "Concepts become nodes, definitions become edges, and strength becomes heat.",
+  },
+];
+
+const LIMITS = [
+  { icon: "history" as const, label: "60 min" },
+  { icon: "upload" as const, label: "3 uploads" },
+  { icon: "dive" as const, label: "40 messages" },
+  { icon: "trash" as const, label: "auto-deleted" },
+];
+
+export function DemoEntry() {
+  const { launchSandbox, minting, error } = useDemo();
+  const [launched, setLaunched] = useState(false);
+  const redirectRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (redirectRef.current !== null) {
+        window.clearTimeout(redirectRef.current);
+      }
+    };
+  }, []);
+
+  const handleLaunch = async () => {
+    if (minting || launched) return;
+    try {
+      const success = await launchSandbox();
+      if (success) {
+        setLaunched(true);
+        redirectRef.current = window.setTimeout(() => {
+          window.location.assign(ROUTES.cortex);
+        }, 700);
+      }
+    } catch {
+      setLaunched(false);
+    }
+  };
+
+  const status = minting
+    ? "provisioning isolated memory space"
+    : launched
+      ? "handing you the keys"
+      : "ready to ignite";
+
+  return (
+    <section className="section" id="demo">
+      <div className="section-head">
+        <p className="sec-kicker">Live sandbox</p>
+        <h2 className="sec-title">
+          Try it now. <em>No signup.</em>
+        </h2>
+        <p className="sec-sub">
+          Upload a paper, chat with it, and watch the graph build in real time.
+          Your own isolated memory space, alive for sixty minutes, then gone.
+        </p>
+      </div>
+
+      <div className="demo-shell fx-rise">
+        <span className="demo-aura" aria-hidden="true" />
+        <span className="demo-grid" aria-hidden="true" />
+
+        <div className="demo-inner">
+          <div className="demo-left">
+            <span className="demo-badge">
+              <span className="demo-badge-dot fx-pulse-soft" />
+              live environment
+            </span>
+
+            <h3 className="demo-title">
+              Ignite a disposable <em>second brain.</em>
+            </h3>
+
+            <p className="demo-sub">
+              This is a real ContextOS environment, not a mock. It extracts,
+              embeds, retrieves, and decays exactly like the production system,
+              then evaporates without leaving a trace.
+            </p>
+
+            <div className="demo-features">
+              {FEATURES.map((feature) => (
+                <article key={feature.title} className="demo-feature">
+                  <span className="demo-feature-icon">
+                    <Icon name={feature.icon} size={18} />
+                  </span>
+                  <div>
+                    <h4>{feature.title}</h4>
+                    <p>{feature.body}</p>
+                  </div>
+                </article>
+              ))}
+            </div>
+
+            <div className="demo-limits">
+              {LIMITS.map((limit) => (
+                <span key={limit.label} className="demo-chip">
+                  <Icon name={limit.icon} size={13} />
+                  {limit.label}
+                </span>
+              ))}
+            </div>
+          </div>
+
+          <div className="demo-console">
+            <div className="demo-orbit" aria-hidden="true">
+              <span className="demo-orbit-core" />
+              <span className="demo-orbit-ring r1">
+                <span className="demo-satellite" />
+              </span>
+              <span className="demo-orbit-ring r2">
+                <span className="demo-satellite" />
+              </span>
+              <span className="demo-orbit-ring r3">
+                <span className="demo-satellite" />
+              </span>
+            </div>
+
+            <div className="demo-console-body">
+              <p className="demo-status" aria-live="polite">
+                {status}
+              </p>
+
+              <button
+                className="demo-button"
+                onClick={() => void handleLaunch()}
+                disabled={minting || launched}
+              >
+                {minting ? (
+                  <>
+                    <span className="h-2 w-2 animate-ping rounded-full bg-current" />
+                    Igniting sandbox…
+                  </>
+                ) : launched ? (
+                  <>
+                    <Icon name="check" size={16} />
+                    Entering…
+                  </>
+                ) : (
+                  <>
+                    <Icon name="spark" size={16} />
+                    Launch live sandbox
+                  </>
+                )}
+              </button>
+
+              {error && <p className="demo-error">{error}</p>}
+
+              {launched && !error && (
+                <p className="demo-success">Sandbox ignited. Entering Cortex…</p>
+              )}
+
+              <p className="demo-note">
+                Nothing is saved. Nothing is shared. It disappears when the timer ends.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+
+================================================================================
+END OF FRONTEND DUMP
+================================================================================

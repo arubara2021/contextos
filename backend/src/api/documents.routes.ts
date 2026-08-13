@@ -525,8 +525,8 @@ async function processDocumentAsync(
     if (ingestionResult.status === "failed" || ingestionResult.status === "empty") {
       const errors = Array.isArray(ingestionResult.errors)
         ? ingestionResult.errors.filter(
-            (item: unknown): item is string => typeof item === "string"
-          )
+          (item: unknown): item is string => typeof item === "string"
+        )
         : [];
 
       if (errors.length === 0) {
@@ -566,8 +566,8 @@ async function processDocumentAsync(
 
     const errors = Array.isArray(ingestionResult.errors)
       ? ingestionResult.errors.filter(
-          (item: unknown): item is string => typeof item === "string"
-        )
+        (item: unknown): item is string => typeof item === "string"
+      )
       : [];
 
     if (Number(ingestionResult.chunksFailed ?? 0) > 0) {
@@ -616,10 +616,165 @@ async function processDocumentAsync(
       message: `Failed: ${message}`,
       error: message,
       completedAt: new Date(),
-    }).catch(() => {});
+    }).catch(() => { });
+  }
+}
+const QSTASH_URL = process.env.QSTASH_URL ?? "";
+const QSTASH_TOKEN = process.env.QSTASH_TOKEN ?? "";
+const INTERNAL_PROCESS_SECRET = process.env.INTERNAL_PROCESS_SECRET ?? "";
+const PUBLIC_BACKEND_URL =
+  process.env.PUBLIC_BACKEND_URL ??
+  (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "");
+
+function queueConfigured(): boolean {
+  return Boolean(
+    QSTASH_URL &&
+    QSTASH_TOKEN &&
+    INTERNAL_PROCESS_SECRET &&
+    PUBLIC_BACKEND_URL
+  );
+}
+
+let uploadFilesTableReady: Promise<void> | null = null;
+
+function ensureUploadFilesTable(): Promise<void> {
+  if (!uploadFilesTableReady) {
+    uploadFilesTableReady = query(
+      `CREATE TABLE IF NOT EXISTS uploaded_files (
+        file_id UUID PRIMARY KEY,
+        user_id UUID NOT NULL,
+        filename TEXT NOT NULL,
+        file_type TEXT NOT NULL,
+        format TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        size_bytes BIGINT NOT NULL,
+        content_base64 TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      )`
+    ).then(() => undefined);
+  }
+  return uploadFilesTableReady;
+}
+
+async function storeUploadedFile(params: {
+  userId: string;
+  filename: string;
+  fileType: string;
+  format: FileFormat;
+  mimeType: string;
+  sizeBytes: number;
+  fileBuffer: Buffer;
+}): Promise<string> {
+  await ensureUploadFilesTable();
+
+  const fileId = randomUUID();
+
+  await query(
+    `INSERT INTO uploaded_files (
+      file_id,
+      user_id,
+      filename,
+      file_type,
+      format,
+      mime_type,
+      size_bytes,
+      content_base64
+    ) VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8)`,
+    [
+      fileId,
+      params.userId,
+      params.filename,
+      params.fileType,
+      params.format,
+      params.mimeType,
+      params.sizeBytes,
+      params.fileBuffer.toString("base64"),
+    ]
+  );
+
+  return `dbupload:${fileId}`;
+}
+
+async function enqueueDocumentProcessing(
+  jobId: string,
+  userId: string
+): Promise<void> {
+  const destination =
+    `${PUBLIC_BACKEND_URL}/api/documents/process` +
+    `?secret=${encodeURIComponent(INTERNAL_PROCESS_SECRET)}` +
+    `&jobId=${encodeURIComponent(jobId)}` +
+    `&userId=${encodeURIComponent(userId)}`;
+
+  const publishUrl =
+    `${QSTASH_URL.replace(/\/+$/, "")}/v2/publish/` +
+    encodeURIComponent(destination);
+
+  const response = await fetch(publishUrl, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${QSTASH_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({}),
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`QStash enqueue failed: ${response.status} ${errorText}`);
   }
 }
 
+async function runUntil(promise: Promise<unknown>): Promise<void> {
+  try {
+    const vercelFunctions = await import("@vercel/functions");
+
+    if (typeof vercelFunctions.waitUntil === "function") {
+      vercelFunctions.waitUntil(promise);
+      return;
+    }
+  } catch { }
+
+  await promise;
+}
+
+async function loadUploadedFileBuffer(
+  locator: string,
+  userId: string
+): Promise<{ buffer: Buffer; fileId: string } | null> {
+  if (!locator.startsWith("dbupload:")) {
+    return null;
+  }
+
+  const fileId = locator.slice("dbupload:".length);
+
+  const row = await queryOne<{ content_base64: string }>(
+    `SELECT content_base64
+     FROM uploaded_files
+     WHERE file_id = $1::uuid AND user_id = $2::uuid`,
+    [fileId, userId]
+  );
+
+  if (!row) {
+    return null;
+  }
+
+  return {
+    buffer: Buffer.from(row.content_base64, "base64"),
+    fileId,
+  };
+}
+
+async function deleteUploadedFileLocator(locator: string): Promise<void> {
+  if (!locator.startsWith("dbupload:")) {
+    return;
+  }
+
+  const fileId = locator.slice("dbupload:".length);
+
+  await query(`DELETE FROM uploaded_files WHERE file_id = $1::uuid`, [
+    fileId,
+  ]).catch(() => { });
+}
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024, files: 1 },
@@ -716,39 +871,69 @@ router.post(
       const jobId = randomUUID();
       const mimeType = file.mimetype;
 
-      await query(
-        `INSERT INTO processing_jobs (
-           job_id,
-           user_id,
-           filename,
-           file_type,
-           format,
-           mime_type,
-           size_bytes,
-           status,
-           stage,
-           progress,
-           message,
-           started_at
-         ) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, 'queued', 'uploaded', 0, 'File uploaded, processing queued', now())`,
-        [jobId, req.userId, file.originalname, fileType, format, mimeType, file.size]
-      );
-
-      void processDocumentAsync(
-        jobId,
-        req.userId,
-        file.originalname,
+      const fileLocator = await storeUploadedFile({
+        userId: req.userId,
+        filename: file.originalname,
         fileType,
         format,
         mimeType,
-        file.size,
-        file.buffer
-      ).catch((err) => {
-        logger.error("Background processing unhandled error", {
-          jobId,
-          error: (err as Error).message,
-        });
+        sizeBytes: file.size,
+        fileBuffer: file.buffer,
       });
+
+      await query(
+        `INSERT INTO processing_jobs (
+    job_id,
+    user_id,
+    filename,
+    file_type,
+    format,
+    mime_type,
+    size_bytes,
+    status,
+    stage,
+    progress,
+    message,
+    started_at
+  ) VALUES ($1, $2::uuid, $3, $4, $5, $6, $7, 'queued', 'uploaded', 0, 'File uploaded, processing queued', now())`,
+        [jobId, req.userId, file.originalname, fileType, format, mimeType, file.size]
+      );
+
+      await updateJob(jobId, {
+        s3Key: fileLocator,
+      });
+
+      let processingMode = "local";
+
+      if (queueConfigured()) {
+        try {
+          await enqueueDocumentProcessing(jobId, req.userId);
+          processingMode = "queue";
+        } catch (queueError) {
+          logger.error("QStash enqueue failed, falling back to local processing", {
+            jobId,
+            error: (queueError as Error).message,
+          });
+        }
+      }
+
+      if (processingMode === "local") {
+        void processDocumentAsync(
+          jobId,
+          req.userId,
+          file.originalname,
+          fileType,
+          format,
+          mimeType,
+          file.size,
+          file.buffer
+        ).catch((err) => {
+          logger.error("Background processing unhandled error", {
+            jobId,
+            error: (err as Error).message,
+          });
+        });
+      }
 
       res.status(202).json({
         jobId,
@@ -964,15 +1149,15 @@ router.get(
 
       const storageInfo = document.s3_key
         ? {
-            storedIn: "s3",
-            s3Key: document.s3_key,
-            contentPreview: decryptedContent.substring(0, 200),
-          }
+          storedIn: "s3",
+          s3Key: document.s3_key,
+          contentPreview: decryptedContent.substring(0, 200),
+        }
         : {
-            storedIn: "database",
-            s3Key: null,
-            contentPreview: decryptedContent.substring(0, 200),
-          };
+          storedIn: "database",
+          s3Key: null,
+          contentPreview: decryptedContent.substring(0, 200),
+        };
 
       res.status(200).json({
         document: {
@@ -1171,5 +1356,147 @@ router.delete(
     }
   }
 );
+router.post(
+  "/process",
+  async (req: AuthenticatedRequest, res: Response) => {
+    try {
+      const secret = String(req.query.secret ?? "");
+      const jobId = String(req.query.jobId ?? "");
+      const userId = String(req.query.userId ?? "");
 
+      if (!INTERNAL_PROCESS_SECRET || secret !== INTERNAL_PROCESS_SECRET) {
+        res.status(401).json({ error: "Unauthorized" });
+        return;
+      }
+
+      if (!isValidUuid(jobId) || !isValidUuid(userId)) {
+        res.status(400).json({ error: "Invalid jobId or userId" });
+        return;
+      }
+
+      const job = await queryOne<{
+        job_id: string;
+        filename: string;
+        file_type: string;
+        format: string;
+        mime_type: string | null;
+        size_bytes: number | string;
+        status: string;
+        s3_key: string | null;
+      }>(
+        `SELECT job_id, filename, file_type, format, mime_type, size_bytes, status, s3_key
+         FROM processing_jobs
+         WHERE job_id = $1::uuid AND user_id = $2::uuid`,
+        [jobId, userId]
+      );
+
+      if (!job) {
+        res.status(404).json({ error: "Processing job not found" });
+        return;
+      }
+
+      if (job.status !== "queued") {
+        res.status(200).json({
+          ok: true,
+          skipped: true,
+          reason: job.status,
+        });
+        return;
+      }
+
+      const locked = await queryOne<{ job_id: string }>(
+        `UPDATE processing_jobs
+         SET status = 'processing',
+             stage = 'worker',
+             progress = 5,
+             message = 'Worker picked up job'
+         WHERE job_id = $1::uuid
+           AND user_id = $2::uuid
+           AND status = 'queued'
+         RETURNING job_id`,
+        [jobId, userId]
+      );
+
+      if (!locked) {
+        res.status(200).json({
+          ok: true,
+          skipped: true,
+          reason: "already_locked",
+        });
+        return;
+      }
+
+      const locator = job.s3_key ?? "";
+
+      if (!locator.startsWith("dbupload:")) {
+        await updateJob(jobId, {
+          status: "failed",
+          stage: "failed",
+          progress: 100,
+          message: "Missing uploaded file locator",
+          error: "Missing uploaded file locator",
+          completedAt: new Date(),
+        });
+
+        res.status(200).json({
+          ok: false,
+          error: "missing_locator",
+        });
+        return;
+      }
+
+      const loadedFile = await loadUploadedFileBuffer(locator, userId);
+
+      if (!loadedFile) {
+        await updateJob(jobId, {
+          status: "failed",
+          stage: "failed",
+          progress: 100,
+          message: "Uploaded file not found",
+          error: "Uploaded file not found",
+          completedAt: new Date(),
+        });
+
+        res.status(200).json({
+          ok: false,
+          error: "missing_file",
+        });
+        return;
+      }
+
+      const work = processDocumentAsync(
+        jobId,
+        userId,
+        job.filename,
+        job.file_type,
+        job.format as FileFormat,
+        job.mime_type ?? "application/octet-stream",
+        Number(job.size_bytes),
+        loadedFile.buffer
+      )
+        .catch((error) => {
+          logger.error("Queue worker processing failed", {
+            jobId,
+            error: (error as Error).message,
+          });
+        })
+        .finally(async () => {
+          await deleteUploadedFileLocator(locator);
+        });
+
+      await runUntil(work);
+
+      res.status(202).json({
+        ok: true,
+        jobId,
+      });
+    } catch (error) {
+      logger.error("POST /documents/process failed", {
+        error: (error as Error).message,
+      });
+
+      res.status(500).json({ error: "Queue worker failed" });
+    }
+  }
+);
 export default router;
