@@ -24,6 +24,7 @@
     "@aws-sdk/client-bedrock-runtime": "^3.600.0",
     "@aws-sdk/client-s3": "^3.1086.0",
     "@aws-sdk/s3-request-presigner": "^3.1086.0",
+    "@trigger.dev/sdk": "4.5.11",
     "@vercel/functions": "^1.5.0",
     "bcrypt": "^5.1.1",
     "compromise": "^14.16.0",
