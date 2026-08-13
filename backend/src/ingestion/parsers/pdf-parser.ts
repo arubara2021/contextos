@@ -7,8 +7,7 @@ import type {
 import { cleanPdfText } from "../../utils/text-cleaner";
 import logger from "../../utils/logger";
 
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const pdfParse = require("pdf-parse") as (buffer: Buffer) => Promise<{ text: string; numpages: number; info: Record<string, unknown> }>;
+
 let pdfjsLib: any = null;
 let pdfjsChecked = false;
 
@@ -716,13 +715,30 @@ async function tryFallbackPdfParse(
   buffer: Buffer,
   errors: string[]
 ): Promise<ParsedDocument> {
+  let pdfParseFn: ((buffer: Buffer) => Promise<{ text: string; numpages: number; info: Record<string, unknown> }>) | null = null;
+
   try {
-    const data = await pdfParse(buffer);
-    let rawText = typeof data.text === "string" ? data.text : "";
+    const mod = require("pdf-parse");
+    pdfParseFn = typeof mod === "function" ? mod : mod.default || null;
+  } catch {
+    try {
+      const mod = await import("pdf-parse");
+      pdfParseFn = typeof mod === "function" ? mod : mod.default || null;
+    } catch {
+      /* neither available */
+    }
+  }
+
+  if (!pdfParseFn) {
+    errors.push("Neither pdfjs-dist nor pdf-parse available");
+    return emptyResult(errors);
+  }
+
+  try {
+    const data = await pdfParseFn(buffer);
+    const rawText = cleanPdfText(typeof data.text === "string" ? data.text : "");
     const pageCount = typeof data.numpages === "number" ? data.numpages : null;
     const info = data.info || {};
-
-    rawText = cleanPdfText(rawText);
     const wordCount = rawText.split(/\s+/).filter((w: string) => w.length > 0).length;
     logger.info("PDF fallback parse complete", {
       pages: pageCount,
