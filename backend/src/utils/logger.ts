@@ -7,12 +7,12 @@ const logFormat = winston.format.combine(
   config.server.isProduction
     ? winston.format.json()
     : winston.format.combine(
-        winston.format.colorize(),
-        winston.format.printf(({ timestamp, level, message, ...meta }) => {
-          const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : "";
-          return `${timestamp} [${level}] ${message}${metaStr}`;
-        })
-      )
+      winston.format.colorize(),
+      winston.format.printf(({ timestamp, level, message, ...meta }) => {
+        const metaStr = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : "";
+        return `${timestamp} [${level}] ${message}${metaStr}`;
+      })
+    )
 );
 
 const logger = winston.createLogger({
@@ -27,7 +27,9 @@ const logger = winston.createLogger({
   ],
 });
 
-if (config.server.isProduction) {
+const isServerless = Boolean(process.env.VERCEL) || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME);
+
+if (config.server.isProduction && !isServerless) {
   logger.add(
     new winston.transports.File({
       filename: "logs/error.log",
