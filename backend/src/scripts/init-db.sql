@@ -246,3 +246,14 @@ CREATE INDEX IF NOT EXISTS idx_document_links_user_target ON document_links (use
 CREATE INDEX IF NOT EXISTS idx_document_links_updated_at ON document_links (updated_at DESC);
 
 CREATE VECTOR INDEX IF NOT EXISTS idx_embeddings_vector ON embeddings (vector);
+-- MISSING INDEXES for bulk write performance
+CREATE INDEX IF NOT EXISTS idx_relationships_source_target_type
+  ON relationships (source_bucket_id, target_bucket_id, relation_type)
+  WHERE source_bucket_id IS NOT NULL AND target_bucket_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_buckets_normalized_lookup
+  ON buckets (normalized) INCLUDE (bucket_id, user_id);
+
+CREATE INDEX IF NOT EXISTS idx_buckets_user_normalized_lookup
+  ON buckets (user_id, normalized) INCLUDE (bucket_id)
+  WHERE user_id IS NOT NULL;

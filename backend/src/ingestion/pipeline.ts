@@ -139,16 +139,16 @@ interface FastIngestionResultWithConnections extends FastIngestionResult {
 
 type StoreConceptResult =
   | {
-      ok: true;
-      bucketId: string;
-      isNew: boolean;
-      exactMerge: boolean;
-    }
+    ok: true;
+    bucketId: string;
+    isNew: boolean;
+    exactMerge: boolean;
+  }
   | {
-      ok: false;
-      label: string;
-      error: string;
-    };
+    ok: false;
+    label: string;
+    error: string;
+  };
 
 const ingestionQueue: QueuedTask[] = [];
 let isProcessing = false;
@@ -545,18 +545,18 @@ export class IngestionPipeline {
           "UPDATE documents SET content_hash = $1 WHERE document_id = $2 AND content_hash IS NULL",
           [hash, documentId]
         );
-      } catch {}
+      } catch { }
     } else {
       try {
         const existing = resolvedUserId
           ? await queryOne<{ document_id: string }>(
-              "SELECT document_id FROM documents WHERE user_id = $1 AND content_hash = $2 LIMIT 1",
-              [resolvedUserId, hash]
-            )
+            "SELECT document_id FROM documents WHERE user_id = $1 AND content_hash = $2 LIMIT 1",
+            [resolvedUserId, hash]
+          )
           : await queryOne<{ document_id: string }>(
-              "SELECT document_id FROM documents WHERE content_hash = $1 LIMIT 1",
-              [hash]
-            );
+            "SELECT document_id FROM documents WHERE content_hash = $1 LIMIT 1",
+            [hash]
+          );
 
         if (existing) {
           logger.info("Duplicate document skipped", {
@@ -571,7 +571,7 @@ export class IngestionPipeline {
             Date.now() - start
           );
         }
-      } catch {}
+      } catch { }
 
       try {
         documentId = await this.rawStore.storeDocument(
@@ -598,7 +598,7 @@ export class IngestionPipeline {
           "UPDATE documents SET content_hash = $1 WHERE document_id = $2",
           [hash, documentId]
         );
-      } catch {}
+      } catch { }
 
       if (resolvedUserId) {
         try {
@@ -606,7 +606,7 @@ export class IngestionPipeline {
             "UPDATE documents SET user_id = $1 WHERE document_id = $2 AND user_id IS NULL",
             [resolvedUserId, documentId]
           );
-        } catch {}
+        } catch { }
       }
     }
 
@@ -840,13 +840,13 @@ export class IngestionPipeline {
     try {
       const existing = resolvedUserId
         ? await queryOne<{ document_id: string }>(
-            "SELECT document_id FROM documents WHERE user_id = $1 AND content_hash = $2 LIMIT 1",
-            [resolvedUserId, hash]
-          )
+          "SELECT document_id FROM documents WHERE user_id = $1 AND content_hash = $2 LIMIT 1",
+          [resolvedUserId, hash]
+        )
         : await queryOne<{ document_id: string }>(
-            "SELECT document_id FROM documents WHERE content_hash = $1 LIMIT 1",
-            [hash]
-          );
+          "SELECT document_id FROM documents WHERE content_hash = $1 LIMIT 1",
+          [hash]
+        );
 
       if (existing) {
         logger.info("Duplicate document skipped (fast path)", {
@@ -868,7 +868,7 @@ export class IngestionPipeline {
           errors: [],
         };
       }
-    } catch {}
+    } catch { }
 
     let documentId: string;
     try {
@@ -903,7 +903,7 @@ export class IngestionPipeline {
         "UPDATE documents SET content_hash = $1 WHERE document_id = $2",
         [hash, documentId]
       );
-    } catch {}
+    } catch { }
 
     if (resolvedUserId) {
       try {
@@ -911,7 +911,7 @@ export class IngestionPipeline {
           "UPDATE documents SET user_id = $1 WHERE document_id = $2 AND user_id IS NULL",
           [resolvedUserId, documentId]
         );
-      } catch {}
+      } catch { }
     }
 
     for (const chunk of params.chunks) {
@@ -926,7 +926,7 @@ export class IngestionPipeline {
           fileId: params.metadata.fileId,
           ...chunk.metadata,
         });
-      } catch {}
+      } catch { }
     }
 
     const existingMemories = await this.getExistingMemories(resolvedUserId);
@@ -1174,7 +1174,7 @@ export class IngestionPipeline {
               chunkIndex: chunk.chunkIndex,
               tokenEstimate: chunk.tokenEstimate,
             })
-            .catch(() => {})
+            .catch(() => { })
         )
       );
     }
@@ -1233,7 +1233,7 @@ export class IngestionPipeline {
            WHERE bucket_id = ANY($2::uuid[]) AND user_id IS NULL`,
           [safeUserId, Array.from(storeResult.bucketIdByLabel.values())]
         );
-      } catch {}
+      } catch { }
     }
 
     const durationMs = Date.now() - start;
@@ -1297,13 +1297,13 @@ export class IngestionPipeline {
     try {
       const existing = safeUserId
         ? await queryOne<{ document_id: string }>(
-            "SELECT document_id FROM documents WHERE user_id = $1 AND content_hash = $2 LIMIT 1",
-            [safeUserId, hash]
-          )
+          "SELECT document_id FROM documents WHERE user_id = $1 AND content_hash = $2 LIMIT 1",
+          [safeUserId, hash]
+        )
         : await queryOne<{ document_id: string }>(
-            "SELECT document_id FROM documents WHERE content_hash = $1 LIMIT 1",
-            [hash]
-          );
+          "SELECT document_id FROM documents WHERE content_hash = $1 LIMIT 1",
+          [hash]
+        );
 
       if (existing) {
         logger.info("Duplicate document skipped (async)", {
@@ -1312,7 +1312,7 @@ export class IngestionPipeline {
         });
         return existing.document_id;
       }
-    } catch {}
+    } catch { }
 
     const documentId = await this.rawStore.storeDocument(
       filename,
@@ -1325,7 +1325,7 @@ export class IngestionPipeline {
         "UPDATE documents SET content_hash = $1 WHERE document_id = $2",
         [hash, documentId]
       );
-    } catch {}
+    } catch { }
 
     if (safeUserId) {
       try {
@@ -1333,7 +1333,7 @@ export class IngestionPipeline {
           "UPDATE documents SET user_id = $1 WHERE document_id = $2 AND user_id IS NULL",
           [safeUserId, documentId]
         );
-      } catch {}
+      } catch { }
     }
 
     enqueueIngestion(async () => {
@@ -1433,8 +1433,8 @@ export class IngestionPipeline {
     return {
       warnings: Array.isArray(extractionResult?.warnings)
         ? extractionResult.warnings.filter(
-            (item: unknown): item is string => typeof item === "string"
-          )
+          (item: unknown): item is string => typeof item === "string"
+        )
         : [],
       sectionCount: Number(extractionResult?.sectionCount ?? 0),
       aiCalls: Number(extractionResult?.aiCalls ?? 0),
@@ -1492,7 +1492,7 @@ export class IngestionPipeline {
         } else if (concept.importance > existing.importance) {
           seen.set(key, concept);
         }
-      } catch {}
+      } catch { }
     }
     return Array.from(seen.values());
   }
@@ -1541,8 +1541,7 @@ export class IngestionPipeline {
         } else {
           results.push({ ...batch[j], embedding: null });
           errors.push(
-            `Embedding failed for ${batch[j].label}: ${
-              result.reason?.message ?? "unknown error"
+            `Embedding failed for ${batch[j].label}: ${result.reason?.message ?? "unknown error"
             }`
           );
           logger.debug("Embedding failed for concept", {
@@ -1563,104 +1562,60 @@ export class IngestionPipeline {
   }
 
   private async storeConcepts(
-    concepts: Array<Concept & { embedding?: number[] | null }>,
-    documentId?: string,
-    userId?: string | null
-  ): Promise<{
-    newBuckets: number;
-    mergedBuckets: number;
-    exactMerges: number;
-    bucketIdByLabel: Map<string, string>;
-    mergedBucketIds: string[];
-    errors: string[];
-  }> {
-    let newBuckets = 0;
-    let mergedBuckets = 0;
-    let exactMerges = 0;
-    const bucketIdByLabel = new Map<string, string>();
-    const mergedBucketIds: string[] = [];
-    const errors: string[] = [];
-
+    concepts: Array<Concept & { embedding?: number[] | null }>, documentId?: string, userId?: string | null
+  ): Promise<{ newBuckets: number; mergedBuckets: number; exactMerges: number; bucketIdByLabel: Map<string, string>; mergedBucketIds: string[]; errors: string[]; }> {
     const safeUserId = userId && isValidUuid(userId) ? userId : null;
-    const safeDocumentId =
-      documentId && isValidUuid(documentId) ? documentId : null;
+    const safeDocumentId = documentId && isValidUuid(documentId) ? documentId : null;
+    const errors: string[] = [];
+    if (concepts.length === 0) return { newBuckets: 0, mergedBuckets: 0, exactMerges: 0, bucketIdByLabel: new Map(), mergedBucketIds: [], errors };
 
-    const concurrency = Math.max(
-      1,
-      Math.min(6, Number(config.extraction.embeddingConcurrency) || 6)
-    );
+    const bucketEntries = concepts.map((c) => ({ label: c.label, definition: c.definition, conceptType: c.conceptType, importance: c.importance, source: c.source, documentId: safeDocumentId, userId: safeUserId }));
+    let bulkResult: { newBuckets: number; mergedBuckets: number; bucketIds: string[] };
 
-    const results = await runWithConcurrency(
-      concepts,
-      concurrency,
-      async (concept): Promise<StoreConceptResult> => {
-        const labelKey = normalizeLabel(concept.label);
+    try {
+      const { getBucketStore } = await import("../storage/bucket-store");
+      bulkResult = await getBucketStore().bulkUpsertBuckets(bucketEntries);
+    } catch (error) {
+      logger.error("bulkUpsertBuckets failed, falling back", { error: (error as Error).message });
+      const bucketIdByLabel = new Map<string, string>(); const mergedBucketIds: string[] = [];
+      let newBuckets = 0, mergedBuckets = 0, exactMerges = 0;
+      for (const c of concepts) {
         try {
-          const result = await this.bucketStore.getOrCreateBucket(
-            concept.label,
-            concept.definition,
-            concept.conceptType,
-            concept.importance,
-            concept.source,
-            safeDocumentId,
-            safeUserId
-          );
-
-          bucketIdByLabel.set(labelKey, result.bucketId);
-
-          if (
-            concept.embedding &&
-            this.embeddingGenerator.validateEmbedding(concept.embedding)
-          ) {
-            await this.embeddingStore.storeEmbedding(
-              result.bucketId,
-              concept.embedding,
-              safeDocumentId
-            );
-          } else {
-            errors.push(`Missing or invalid embedding for ${concept.label}`);
-          }
-
-          return {
-            ok: true,
-            bucketId: result.bucketId,
-            isNew: result.isNew,
-            exactMerge: Boolean(result.exactMerge ?? !result.isNew),
-          };
-        } catch (error) {
-          bucketIdByLabel.delete(labelKey);
-          return {
-            ok: false,
-            label: concept.label,
-            error: (error as Error).message,
-          };
-        }
+          const { getBucketStore } = await import("../storage/bucket-store");
+          const r = await getBucketStore().getOrCreateBucket(c.label, c.definition, c.conceptType, c.importance, c.source, safeDocumentId, safeUserId);
+          bucketIdByLabel.set(normalizeLabel(c.label), r.bucketId);
+          if (r.isNew) newBuckets++; else { mergedBuckets++; mergedBucketIds.push(r.bucketId); if (r.exactMerge) exactMerges++; }
+        } catch (err) { errors.push(`Failed to store ${c.label}: ${(err as Error).message}`); }
       }
-    );
+      return { newBuckets, mergedBuckets, exactMerges, bucketIdByLabel, mergedBucketIds, errors };
+    }
 
-    for (const result of results) {
-      if (result.ok) {
-        if (result.isNew) {
-          newBuckets++;
-        } else {
-          mergedBuckets++;
-          mergedBucketIds.push(result.bucketId);
-          if (result.exactMerge) {
-            exactMerges++;
-          }
-        }
-      } else {
-        errors.push(`Failed to store concept ${result.label}: ${result.error}`);
+    const bucketIdByLabel = new Map<string, string>();
+    for (let i = 0; i < concepts.length; i++) {
+      const id = bulkResult.bucketIds[i];
+      if (id) bucketIdByLabel.set(normalizeLabel(concepts[i].label), id);
+    }
+
+    const embedEntries: Array<{ bucketId: string; vector: number[] }> = [];
+    for (let i = 0; i < concepts.length; i++) {
+      const c = concepts[i]; const id = bulkResult.bucketIds[i];
+      if (!id || !c.embedding || !this.embeddingGenerator.validateEmbedding(c.embedding)) {
+        if (id && (!c.embedding || !this.embeddingGenerator.validateEmbedding(c.embedding!))) errors.push(`Missing or invalid embedding for ${c.label}`);
+        continue;
       }
+      embedEntries.push({ bucketId: id, vector: c.embedding });
+    }
+
+    if (embedEntries.length > 0) {
+      try {
+        const { getEmbeddingStore } = await import("../storage/embedding-store");
+        await getEmbeddingStore().batchStoreEmbeddings(embedEntries);
+      } catch (error) { errors.push(`Batch embedding store failed: ${(error as Error).message}`); }
     }
 
     return {
-      newBuckets,
-      mergedBuckets,
-      exactMerges,
-      bucketIdByLabel,
-      mergedBucketIds,
-      errors,
+      newBuckets: bulkResult.newBuckets, mergedBuckets: bulkResult.mergedBuckets, exactMerges: bulkResult.mergedBuckets,
+      bucketIdByLabel, mergedBucketIds: bulkResult.mergedBuckets > 0 ? bulkResult.bucketIds.slice(concepts.length - bulkResult.mergedBuckets) : [], errors,
     };
   }
 

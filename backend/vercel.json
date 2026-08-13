@@ -10,6 +10,9 @@
             "maxDuration": 60
         }
     },
+    "regions": [
+        "sin1"
+    ],
     "crons": [
         {
             "path": "/api/cron/sandbox-sweep",

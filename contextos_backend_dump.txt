@@ -6,122 +6,78 @@ Total files: 3
 
 
 ================================================================================
-FILE: src/storage/relationship-store.ts
+FILE: src/ingestion/correlation-engine.ts
 ================================================================================
 
-import { query, queryOne, queryMany, withTransaction } from "../database";
-import {
-  Relationship,
-  RelationshipRow,
-  RelationshipCreateParams,
-  RelationshipWithMeta,
-  RelationshipType,
-  mapRowToRelationship,
-  mapRowToRelationshipWithMeta,
-  validateConfidence,
-  RELATIONSHIP_TYPES,
-} from "../models/relationship.model";
-import { normalizeKey } from "./bucket-store";
+import config from "../config";
 import logger from "../utils/logger";
+import { queryMany } from "../database";
+import {
+  EmbeddingStore,
+  getEmbeddingStore,
+} from "../storage/embedding-store";
+import {
+  RelationshipStore,
+  getRelationshipStore,
+  type DocumentLinkInput,
+  type RelatedDocumentRow,
+  type TopConnectedMemoryRow,
+  type ConnectionStatsRow,
+  type VectorConnectionEdge,
+} from "../storage/relationship-store";
 
-export type RelationshipMethod =
-  | "exact"
-  | "vector"
-  | "extraction"
-  | "ai"
-  | "legacy";
-
-export interface RelationshipMetadata {
-  method?: RelationshipMethod;
-  similarity?: number;
-  sourceDocumentId?: string | null;
-  targetDocumentId?: string | null;
-  evidence?: string;
-  updatedAt?: string;
-}
-
-type RelationshipCreateParamsExtended = RelationshipCreateParams & {
-  sourceBucketId?: string | null;
-  targetBucketId?: string | null;
-  userId?: string | null;
-  documentId?: string | null;
-  sourceDocumentId?: string | null;
-  targetDocumentId?: string | null;
-  metadata?: RelationshipMetadata;
-};
-
-interface SyncEdgeInput {
-  sourceBucketId?: string | null;
-  targetBucketId?: string | null;
-  sourceLabel?: string;
-  targetLabel?: string;
-  relationType?: RelationshipType;
-  confidence?: number;
-  sourceText?: string | null;
-}
-
-interface SyncFromConceptsInput {
-  userId?: string | null;
-  documentId?: string | null;
-  edges: SyncEdgeInput[];
-}
-
-export interface VectorConnectionEdge {
-  sourceBucketId: string;
-  targetBucketId: string;
-  sourceLabel?: string;
-  targetLabel?: string;
-  confidence: number;
-  similarity?: number;
-  sourceDocumentId?: string | null;
-  targetDocumentId?: string | null;
-  evidence?: string;
-}
-
-interface SyncVectorConnectionsInput {
-  userId: string;
-  documentId?: string | null;
-  edges: VectorConnectionEdge[];
-}
-
-interface ExpandedEdge {
-  sourceBucketId: string;
-  targetBucketId: string;
-  relationType: string;
-  confidence: number;
-}
-
-export interface DocumentLinkInput {
-  targetDocumentId: string;
-  correlationScore: number;
-  sharedBucketCount: number;
-  edgeCount: number;
-  avgConfidence: number;
-}
-
-export interface RelatedDocumentRow {
-  documentId: string;
-  filename: string;
-  correlation: number;
-  sharedConcepts: number;
-  edges: number;
-  avgConfidence: number;
-}
-
-export interface TopConnectedMemoryRow {
-  bucketId: string;
+export interface CorrelationConceptInput {
   label: string;
-  relationType: string;
-  confidence: number;
+  embedding?: number[] | null;
+}
+
+export interface CorrelationParams {
+  userId: string;
+  documentId: string;
+  concepts: CorrelationConceptInput[];
+  bucketIdByLabel: Map<string, string>;
+  mergedBucketIds?: string[];
+  exactMerges?: number;
+}
+
+export interface CorrelationResult {
+  connections: ConnectionStatsRow;
+  relatedDocuments: RelatedDocumentRow[];
+  topConnectedMemories: TopConnectedMemoryRow[];
+  edgesStored: number;
+}
+
+interface CorrelationConfig {
+  enabled: boolean;
+  minSimilarity: number;
+  strongSimilarity: number;
+  maxLinksPerConcept: number;
+  maxEdgesPerDocument: number;
+  documentTopN: number;
+}
+
+interface SourceEntry {
+  label: string;
+  bucketId: string;
+  embedding: number[];
+}
+
+interface BucketMeta {
+  label: string;
   documentId: string | null;
 }
 
-export interface ConnectionStatsRow {
-  exactMerges: number;
-  semanticConnections: number;
-  crossDocumentConnections: number;
-  strongConnections: number;
-  connectionScore: number;
+interface TargetDocumentStat {
+  documentId: string;
+  edgeCount: number;
+  sumConfidence: number;
+  shared: Set<string>;
+}
+
+interface ExactMergeOutcome {
+  crossExactMerges: number;
+  exactTop: TopConnectedMemoryRow[];
+  exactRelated: RelatedDocumentRow[];
 }
 
 const UUID_REGEX =
@@ -129,6 +85,14 @@ const UUID_REGEX =
 
 function isValidUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_REGEX.test(value.trim());
+}
+
+function normalizeLabel(label: string): string {
+  return label
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function clampUnit(value: unknown): number {
@@ -149,2143 +113,988 @@ function nonNegativeInt(value: unknown): number {
   return Math.max(0, Math.round(num));
 }
 
-function sanitizeMetadata(
-  metadata?: RelationshipMetadata | null
-): RelationshipMetadata | null {
-  if (!metadata) return null;
-  const result: RelationshipMetadata = {};
-  if (metadata.method) {
-    result.method = metadata.method;
-  }
-  if (
-    typeof metadata.similarity === "number" &&
-    Number.isFinite(metadata.similarity)
-  ) {
-    result.similarity = clampUnit(metadata.similarity);
-  }
-  if (metadata.sourceDocumentId) {
-    result.sourceDocumentId = metadata.sourceDocumentId;
-  }
-  if (metadata.targetDocumentId) {
-    result.targetDocumentId = metadata.targetDocumentId;
-  }
-  if (metadata.evidence) {
-    result.evidence = String(metadata.evidence).substring(0, 1000);
-  }
-  result.updatedAt = new Date().toISOString();
-  return Object.keys(result).length > 0 ? result : null;
+function deserializeVector(raw: string): number[] {
+  const cleaned = raw.replace(/^\[|\]$/g, "");
+  return cleaned.split(",").map((s) => parseFloat(s.trim()));
 }
 
-function normalizeDocumentLink(
-  link: DocumentLinkInput,
-  sourceDocumentId: string
-): DocumentLinkInput | null {
-  const targetDocumentId = String(link.targetDocumentId ?? "").trim();
-  if (!isValidUuid(targetDocumentId)) {
-    return null;
+function averageVectors(vectors: number[][]): number[] | null {
+  if (vectors.length === 0) return null;
+  const dimension = vectors[0].length;
+  if (!dimension) return null;
+  const sum = new Array<number>(dimension).fill(0);
+  let count = 0;
+  for (const vector of vectors) {
+    if (!Array.isArray(vector) || vector.length !== dimension) continue;
+    let valid = true;
+    for (let i = 0; i < dimension; i++) {
+      if (!Number.isFinite(vector[i])) {
+        valid = false;
+        break;
+      }
+    }
+    if (!valid) continue;
+    for (let i = 0; i < dimension; i++) {
+      sum[i] += vector[i];
+    }
+    count++;
   }
-  if (targetDocumentId === sourceDocumentId) {
-    return null;
-  }
-  const edgeCount = nonNegativeInt(link.edgeCount);
-  const sharedBucketCount = nonNegativeInt(link.sharedBucketCount);
-  if (edgeCount <= 0 && sharedBucketCount <= 0) {
-    return null;
-  }
-  return {
-    targetDocumentId,
-    correlationScore: round4(link.correlationScore),
-    sharedBucketCount,
-    edgeCount,
-    avgConfidence: round4(link.avgConfidence),
-  };
+  if (count === 0) return null;
+  return sum.map((value) => value / count);
 }
 
-export class RelationshipStore {
-  private normalizeRelationType(value: unknown): RelationshipType {
-    if (typeof value !== "string") return "related_to";
-    return (RELATIONSHIP_TYPES as string[]).includes(value)
-      ? (value as RelationshipType)
-      : "related_to";
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (!Array.isArray(a) || !Array.isArray(b)) return 0;
+  if (a.length === 0 || a.length !== b.length) return 0;
+  let dot = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < a.length; i++) {
+    if (!Number.isFinite(a[i]) || !Number.isFinite(b[i])) return 0;
+    dot += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return clampUnit(dot / (Math.sqrt(normA) * Math.sqrt(normB)));
+}
+
+function jaccardSimilarity(a: Set<string>, b: Set<string>): number {
+  if (a.size === 0 && b.size === 0) return 0;
+  let intersection = 0;
+  for (const value of a) {
+    if (b.has(value)) intersection++;
+  }
+  const union = new Set([...a, ...b]).size;
+  if (union === 0) return 0;
+  return clampUnit(intersection / union);
+}
+
+export class CorrelationEngine {
+  private readonly embeddingStore: EmbeddingStore;
+  private readonly relationshipStore: RelationshipStore;
+
+  constructor(deps?: {
+    embeddingStore?: EmbeddingStore;
+    relationshipStore?: RelationshipStore;
+  }) {
+    this.embeddingStore = deps?.embeddingStore ?? getEmbeddingStore();
+    this.relationshipStore = deps?.relationshipStore ?? getRelationshipStore();
   }
 
-  private prepareMetadata(
-    params: RelationshipCreateParamsExtended
-  ): RelationshipMetadata | null {
-    const base: RelationshipMetadata = { ...(params.metadata ?? {}) };
-    if (params.sourceDocumentId) {
-      base.sourceDocumentId = params.sourceDocumentId;
-    }
-    if (params.targetDocumentId) {
-      base.targetDocumentId = params.targetDocumentId;
-    }
-    if (params.documentId && !base.sourceDocumentId) {
-      base.sourceDocumentId = params.documentId;
-    }
-    return sanitizeMetadata(base);
-  }
+  async run(params: CorrelationParams): Promise<CorrelationResult> {
+    const cfg = this.getCorrelationConfig();
+    const inputExactMerges = Math.max(0, Math.round(params.exactMerges ?? 0));
 
-  async resolveBucketIdByCanonical(
-    canonical: string,
-    userId?: string | null,
-    documentId?: string | null
-  ): Promise<string | null> {
-    if (!canonical || !canonical.trim()) return null;
-    const normalized = normalizeKey(canonical);
+    if (!params.userId || !params.documentId) {
+      return { ...this.emptyResult(inputExactMerges), edgesStored: 0 };
+    }
+
+    if (!isValidUuid(params.userId) || !isValidUuid(params.documentId)) {
+      return { ...this.emptyResult(inputExactMerges), edgesStored: 0 };
+    }
+
+    if (!cfg.enabled) {
+      return {
+        connections: {
+          exactMerges: inputExactMerges,
+          semanticConnections: 0,
+          crossDocumentConnections: 0,
+          strongConnections: 0,
+          connectionScore: clampUnit(inputExactMerges > 0 ? 0.25 : 0),
+        },
+        relatedDocuments: [],
+        topConnectedMemories: [],
+        edgesStored: 0,
+      };
+    }
+
     try {
-      if (documentId && isValidUuid(documentId)) {
-        const row = await queryOne<{ bucket_id: string }>(
-          `SELECT bucket_id
-           FROM buckets
-           WHERE (canonical = $1 OR normalized = $2)
-           AND document_id = $3::uuid
-           ORDER BY strength DESC, last_accessed DESC
-           LIMIT 1`,
-          [canonical, normalized, documentId]
+      await this.relationshipStore
+        .clearDocumentLinks(params.userId, params.documentId)
+        .catch(() => undefined);
+
+      const exact = await this.processExactMerges(params);
+      const effectiveExactMerges =
+        exact.crossExactMerges > 0 ? exact.crossExactMerges : inputExactMerges;
+
+      const sourceEntries = this.buildSourceEntries(params);
+      let edgesStored = 0;
+      let edges: VectorConnectionEdge[] = [];
+
+      if (sourceEntries.length > 0) {
+        const candidateEdges = await this.collectVectorEdges(
+          params,
+          sourceEntries,
+          cfg
         );
-        if (row?.bucket_id) return row.bucket_id;
-      }
+        edges = candidateEdges.slice(0, cfg.maxEdgesPerDocument);
 
-      if (userId && isValidUuid(userId)) {
-        const userRow = await queryOne<{ bucket_id: string }>(
-          `SELECT bucket_id
-           FROM buckets
-           WHERE (canonical = $1 OR normalized = $2)
-           AND user_id = $3::uuid
-           ORDER BY strength DESC, last_accessed DESC
-           LIMIT 1`,
-          [canonical, normalized, userId]
-        );
-        if (userRow?.bucket_id) return userRow.bucket_id;
-
-        const nullRow = await queryOne<{ bucket_id: string }>(
-          `SELECT bucket_id
-           FROM buckets
-           WHERE (canonical = $1 OR normalized = $2)
-           AND user_id IS NULL
-           ORDER BY strength DESC, last_accessed DESC
-           LIMIT 1`,
-          [canonical, normalized]
-        );
-        if (nullRow?.bucket_id) return nullRow.bucket_id;
-        return null;
-      }
-
-      const nullRow = await queryOne<{ bucket_id: string }>(
-        `SELECT bucket_id
-         FROM buckets
-         WHERE (canonical = $1 OR normalized = $2)
-         AND user_id IS NULL
-         ORDER BY strength DESC, last_accessed DESC
-         LIMIT 1`,
-        [canonical, normalized]
-      );
-      if (nullRow?.bucket_id) return nullRow.bucket_id;
-
-      const anyRow = await queryOne<{ bucket_id: string }>(
-        `SELECT bucket_id
-         FROM buckets
-         WHERE canonical = $1 OR normalized = $2
-         ORDER BY strength DESC, last_accessed DESC
-         LIMIT 1`,
-        [canonical, normalized]
-      );
-      return anyRow?.bucket_id ?? null;
-    } catch (error) {
-      logger.error("resolveBucketIdByCanonical failed", {
-        canonical,
-        userId,
-        documentId,
-        error: (error as Error).message,
-      });
-      return null;
-    }
-  }
-
-  private async resolveBucketUserId(bucketId: string): Promise<string | null> {
-    if (!isValidUuid(bucketId)) return null;
-    try {
-      const row = await queryOne<{ user_id: string | null }>(
-        "SELECT user_id FROM buckets WHERE bucket_id = $1::uuid",
-        [bucketId]
-      );
-      return row?.user_id ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  private async resolveCanonical(bucketId: string): Promise<string | null> {
-    if (!isValidUuid(bucketId)) return null;
-    try {
-      const row = await queryOne<{ canonical: string }>(
-        "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
-        [bucketId]
-      );
-      return row?.canonical ?? null;
-    } catch {
-      return null;
-    }
-  }
-
-  async createRelationship(
-    params: RelationshipCreateParamsExtended
-  ): Promise<string> {
-    try {
-      const relationType = this.normalizeRelationType(params.relationType);
-      const confidence = validateConfidence(params.confidence ?? 0.5);
-
-      let sourceBucketId = params.sourceBucketId ?? null;
-      let targetBucketId = params.targetBucketId ?? null;
-      let userId = params.userId ?? null;
-
-      if (sourceBucketId && !isValidUuid(sourceBucketId)) {
-        sourceBucketId = null;
-      }
-      if (targetBucketId && !isValidUuid(targetBucketId)) {
-        targetBucketId = null;
-      }
-      if (userId && !isValidUuid(userId)) {
-        userId = null;
-      }
-
-      if (!sourceBucketId) {
-        sourceBucketId = await this.resolveBucketIdByCanonical(
-          params.sourceBucket,
-          userId,
-          params.documentId
-        );
-      }
-      if (!targetBucketId) {
-        targetBucketId = await this.resolveBucketIdByCanonical(
-          params.targetBucket,
-          userId,
-          params.documentId
-        );
-      }
-
-      if (!userId && sourceBucketId) {
-        userId = await this.resolveBucketUserId(sourceBucketId);
-      }
-      if (!userId && targetBucketId) {
-        userId = await this.resolveBucketUserId(targetBucketId);
-      }
-
-      let sourceCanonical = params.sourceBucket;
-      let targetCanonical = params.targetBucket;
-
-      if (sourceBucketId && (!sourceCanonical || !sourceCanonical.trim())) {
-        sourceCanonical = (await this.resolveCanonical(sourceBucketId)) ?? "";
-      }
-      if (targetBucketId && (!targetCanonical || !targetCanonical.trim())) {
-        targetCanonical = (await this.resolveCanonical(targetBucketId)) ?? "";
-      }
-
-      if (!sourceCanonical || !targetCanonical) return "";
-      if (normalizeKey(sourceCanonical) === normalizeKey(targetCanonical)) {
-        return "";
-      }
-
-      const metadata = this.prepareMetadata(params);
-      const metadataJson = metadata ? JSON.stringify(metadata) : null;
-
-      if (sourceBucketId && targetBucketId) {
-        const existing = userId
-          ? await queryOne<{ relationship_id: string }>(
-              `SELECT relationship_id
-               FROM relationships
-               WHERE source_bucket_id = $1::uuid
-               AND target_bucket_id = $2::uuid
-               AND relation_type = $3
-               AND (user_id = $4::uuid OR user_id IS NULL)
-               LIMIT 1`,
-              [sourceBucketId, targetBucketId, relationType, userId]
-            )
-          : await queryOne<{ relationship_id: string }>(
-              `SELECT relationship_id
-               FROM relationships
-               WHERE source_bucket_id = $1::uuid
-               AND target_bucket_id = $2::uuid
-               AND relation_type = $3
-               AND user_id IS NULL
-               LIMIT 1`,
-              [sourceBucketId, targetBucketId, relationType]
-            );
-
-        if (existing) {
-          await query(
-            `UPDATE relationships
-             SET confidence = GREATEST(confidence, $1),
-                 source_bucket = $2,
-                 target_bucket = $3,
-                 user_id = COALESCE(user_id, $4::uuid),
-                 source_text = COALESCE($5, source_text),
-                 metadata = COALESCE(metadata, '{}'::jsonb) || COALESCE($6::jsonb, '{}'::jsonb)
-             WHERE relationship_id = $7`,
-            [
-              confidence,
-              sourceCanonical,
-              targetCanonical,
-              userId,
-              params.sourceText ?? null,
-              metadataJson,
-              existing.relationship_id,
-            ]
-          );
-          return existing.relationship_id;
+        if (edges.length > 0) {
+          edgesStored = await this.relationshipStore.syncVectorConnections({
+            userId: params.userId,
+            documentId: params.documentId,
+            edges,
+          });
         }
 
-        const row = await queryOne<{ relationship_id: string }>(
-          `INSERT INTO relationships (
-            source_bucket,
-            target_bucket,
-            relation_type,
-            confidence,
-            source_text,
-            source_bucket_id,
-            target_bucket_id,
-            user_id,
-            metadata
+        const currentCentroid = averageVectors(
+          sourceEntries.map((entry) => entry.embedding)
+        );
+        const currentLabels = new Set(
+          sourceEntries
+            .map((entry) => normalizeLabel(entry.label))
+            .filter((label) => label.length > 0)
+        );
+
+        const links = await this.buildDocumentLinks(
+          params,
+          sourceEntries,
+          edges,
+          currentCentroid,
+          currentLabels,
+          cfg
+        );
+
+        if (links.length > 0) {
+          await this.relationshipStore.aggregateDocumentLinks(
+            params.userId,
+            params.documentId,
+            { links }
+          );
+        } else {
+          await this.relationshipStore
+            .aggregateDocumentLinks(params.userId, params.documentId)
+            .catch(() => 0);
+        }
+      } else {
+        await this.relationshipStore
+          .aggregateDocumentLinks(params.userId, params.documentId)
+          .catch(() => 0);
+      }
+
+      const [stats, relatedDocuments, topConnectedMemories] = await Promise.all([
+        this.relationshipStore.getConnectionStats(
+          params.userId,
+          params.documentId,
+          effectiveExactMerges
+        ),
+        this.relationshipStore.getRelatedDocuments(
+          params.userId,
+          params.documentId,
+          cfg.documentTopN
+        ),
+        this.relationshipStore.getTopConnectedMemories(
+          params.userId,
+          params.documentId,
+          cfg.documentTopN
+        ),
+      ]);
+
+      const mergedRelated = this.mergeRelatedDocuments(
+        relatedDocuments,
+        exact.exactRelated
+      );
+      const mergedTop = this.mergeTopConnectedMemories(
+        topConnectedMemories,
+        exact.exactTop,
+        cfg.documentTopN
+      );
+
+      return {
+        connections: stats,
+        relatedDocuments: mergedRelated,
+        topConnectedMemories: mergedTop,
+        edgesStored,
+      };
+    } catch (error) {
+      logger.warn("Correlation engine failed", {
+        userId: params.userId,
+        documentId: params.documentId,
+        error: (error as Error).message,
+      });
+      return { ...this.emptyResult(inputExactMerges), edgesStored: 0 };
+    }
+  }
+
+  private getCorrelationConfig(): CorrelationConfig {
+    const c = (config as any).correlation ?? {};
+    const enabled =
+      typeof c.enabled === "boolean"
+        ? c.enabled
+        : String(c.enabled ?? "true").toLowerCase() !== "false";
+    return {
+      enabled,
+      minSimilarity: clampUnit(Number(c.minSimilarity ?? 0.7)),
+      strongSimilarity: clampUnit(Number(c.strongSimilarity ?? 0.8)),
+      maxLinksPerConcept: Math.max(
+        1,
+        Math.floor(Number(c.maxLinksPerConcept ?? 5))
+      ),
+      maxEdgesPerDocument: Math.max(
+        1,
+        Math.floor(Number(c.maxEdgesPerDocument ?? 150))
+      ),
+      documentTopN: Math.max(1, Math.floor(Number(c.documentTopN ?? 10))),
+    };
+  }
+
+  private emptyResult(exactMerges: number): CorrelationResult {
+    return {
+      connections: {
+        exactMerges,
+        semanticConnections: 0,
+        crossDocumentConnections: 0,
+        strongConnections: 0,
+        connectionScore: clampUnit(exactMerges > 0 ? 0.25 : 0),
+      },
+      relatedDocuments: [],
+      topConnectedMemories: [],
+      edgesStored: 0,
+    };
+  }
+
+  private async processExactMerges(
+    params: CorrelationParams
+  ): Promise<ExactMergeOutcome> {
+    const mergedBucketIds = (params.mergedBucketIds ?? []).filter(isValidUuid);
+    if (mergedBucketIds.length === 0) {
+      return { crossExactMerges: 0, exactTop: [], exactRelated: [] };
+    }
+
+    try {
+      const mergedMeta = await queryMany<{
+        bucket_id: string;
+        canonical: string;
+        document_id: string | null;
+      }>(
+        `SELECT bucket_id, canonical, document_id
+         FROM buckets
+         WHERE bucket_id = ANY($1::uuid[]) AND user_id = $2::uuid`,
+        [mergedBucketIds, params.userId]
+      );
+
+      const targetMap = new Map<string, Set<string>>();
+      const memoryMap = new Map<string, { label: string; documentId: string }>();
+
+      for (const row of mergedMeta) {
+        if (!row.document_id || row.document_id === params.documentId) continue;
+        if (!isValidUuid(row.document_id)) continue;
+        if (!targetMap.has(row.document_id)) {
+          targetMap.set(row.document_id, new Set<string>());
+        }
+        targetMap.get(row.document_id)!.add(row.bucket_id);
+        memoryMap.set(row.bucket_id, {
+          label: row.canonical,
+          documentId: row.document_id,
+        });
+      }
+
+      const crossExactMerges = memoryMap.size;
+
+      const exactTop: TopConnectedMemoryRow[] = Array.from(
+        memoryMap.entries()
+      ).map(([bucketId, meta]) => ({
+        bucketId,
+        label: meta.label,
+        relationType: "shared_memory",
+        confidence: 0.95,
+        documentId: meta.documentId,
+      }));
+
+      const exactLinks: DocumentLinkInput[] = [];
+      for (const [targetDocumentId, bucketSet] of targetMap.entries()) {
+        const count = bucketSet.size;
+        const correlationScore = round4(
+          clampUnit(
+            0.55 + Math.min(0.3, count * 0.1) + Math.min(0.1, count / 10)
           )
-          VALUES ($1, $2, $3, $4, $5, $6::uuid, $7::uuid, $8::uuid, $9::jsonb)
-          ON CONFLICT (source_bucket, target_bucket, relation_type)
-          DO UPDATE SET
-            confidence = GREATEST(relationships.confidence, EXCLUDED.confidence),
-            source_bucket_id = COALESCE(relationships.source_bucket_id, EXCLUDED.source_bucket_id),
-            target_bucket_id = COALESCE(relationships.target_bucket_id, EXCLUDED.target_bucket_id),
-            user_id = COALESCE(relationships.user_id, EXCLUDED.user_id),
-            source_text = COALESCE(EXCLUDED.source_text, relationships.source_text),
-            metadata = COALESCE(relationships.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)
-          RETURNING relationship_id`,
-          [
-            sourceCanonical,
-            targetCanonical,
-            relationType,
-            confidence,
-            params.sourceText ?? null,
-            sourceBucketId,
-            targetBucketId,
-            userId,
-            metadataJson,
-          ]
         );
-        return row?.relationship_id ?? "";
-      }
-
-      const row = await queryOne<{ relationship_id: string }>(
-        `INSERT INTO relationships (
-          source_bucket,
-          target_bucket,
-          relation_type,
-          confidence,
-          source_text,
-          user_id,
-          metadata
-        )
-        VALUES ($1, $2, $3, $4, $5, $6::uuid, $7::jsonb)
-        ON CONFLICT (source_bucket, target_bucket, relation_type)
-        DO UPDATE SET
-          confidence = GREATEST(relationships.confidence, EXCLUDED.confidence),
-          user_id = COALESCE(relationships.user_id, EXCLUDED.user_id),
-          source_text = COALESCE(EXCLUDED.source_text, relationships.source_text),
-          metadata = COALESCE(relationships.metadata, '{}'::jsonb) || COALESCE(EXCLUDED.metadata, '{}'::jsonb)
-        RETURNING relationship_id`,
-        [
-          sourceCanonical,
-          targetCanonical,
-          relationType,
-          confidence,
-          params.sourceText ?? null,
-          userId,
-          metadataJson,
-        ]
-      );
-      return row?.relationship_id ?? "";
-    } catch (error) {
-      logger.error("createRelationship failed", {
-        source: params.sourceBucket,
-        target: params.targetBucket,
-        type: params.relationType,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async syncFromConcepts(input: SyncFromConceptsInput): Promise<number> {
-    if (!input.edges || input.edges.length === 0) return 0;
-    let stored = 0;
-    const seen = new Set<string>();
-
-    for (const edge of input.edges) {
-      try {
-        let sourceBucketId = edge.sourceBucketId ?? null;
-        let targetBucketId = edge.targetBucketId ?? null;
-
-        if (sourceBucketId && !isValidUuid(sourceBucketId)) {
-          sourceBucketId = null;
-        }
-        if (targetBucketId && !isValidUuid(targetBucketId)) {
-          targetBucketId = null;
-        }
-
-        if (!sourceBucketId && edge.sourceLabel) {
-          sourceBucketId = await this.resolveBucketIdByCanonical(
-            edge.sourceLabel,
-            input.userId,
-            input.documentId
-          );
-        }
-        if (!targetBucketId && edge.targetLabel) {
-          targetBucketId = await this.resolveBucketIdByCanonical(
-            edge.targetLabel,
-            input.userId,
-            input.documentId
-          );
-        }
-
-        if (!sourceBucketId || !targetBucketId) continue;
-        if (sourceBucketId === targetBucketId) continue;
-
-        let userId = input.userId ?? null;
-        if (userId && !isValidUuid(userId)) {
-          userId = null;
-        }
-        if (!userId) {
-          userId =
-            (await this.resolveBucketUserId(sourceBucketId)) ??
-            (await this.resolveBucketUserId(targetBucketId));
-        }
-
-        const sourceCanonical =
-          edge.sourceLabel || (await this.resolveCanonical(sourceBucketId));
-        const targetCanonical =
-          edge.targetLabel || (await this.resolveCanonical(targetBucketId));
-        if (!sourceCanonical || !targetCanonical) continue;
-
-        const relationType = this.normalizeRelationType(edge.relationType);
-        const key = `${userId ?? "null"}:${sourceBucketId}:${targetBucketId}:${relationType}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-
-        const relationshipId = await this.createRelationship({
-          sourceBucket: sourceCanonical,
-          targetBucket: targetCanonical,
-          relationType,
-          confidence: edge.confidence ?? 0.65,
-          sourceText: edge.sourceText ?? undefined,
-          sourceBucketId,
-          targetBucketId,
-          userId,
-          documentId: input.documentId ?? null,
-          sourceDocumentId: input.documentId ?? null,
-          metadata: {
-            method: "extraction",
-            sourceDocumentId: input.documentId ?? null,
-            evidence: edge.sourceText ?? undefined,
-          },
-        });
-        if (relationshipId) stored++;
-      } catch {
-        continue;
-      }
-    }
-    return stored;
-  }
-
-  async syncVectorConnections(
-    input: SyncVectorConnectionsInput
-  ): Promise<number> {
-    if (!input.edges || input.edges.length === 0) return 0;
-    if (!isValidUuid(input.userId)) return 0;
-    let stored = 0;
-    const seen = new Set<string>();
-
-    for (const edge of input.edges) {
-      try {
-        if (
-          !isValidUuid(edge.sourceBucketId) ||
-          !isValidUuid(edge.targetBucketId)
-        ) {
-          continue;
-        }
-        if (edge.sourceBucketId === edge.targetBucketId) continue;
-
-        const key = [edge.sourceBucketId, edge.targetBucketId].sort().join(":");
-        if (seen.has(key)) continue;
-        seen.add(key);
-
-        const confidence = clampUnit(edge.confidence);
-        const similarity = clampUnit(edge.similarity ?? confidence);
-
-        const sourceCanonical =
-          edge.sourceLabel || (await this.resolveCanonical(edge.sourceBucketId));
-        const targetCanonical =
-          edge.targetLabel || (await this.resolveCanonical(edge.targetBucketId));
-        if (!sourceCanonical || !targetCanonical) continue;
-
-        const evidence =
-          edge.evidence ?? `${sourceCanonical} -> ${targetCanonical}`;
-        const sourceDocumentId =
-          edge.sourceDocumentId ?? input.documentId ?? null;
-        const targetDocumentId = edge.targetDocumentId ?? null;
-
-        const relationshipId = await this.createRelationship({
-          sourceBucket: sourceCanonical,
-          targetBucket: targetCanonical,
-          relationType: "related_to",
-          confidence,
-          sourceText: evidence,
-          sourceBucketId: edge.sourceBucketId,
-          targetBucketId: edge.targetBucketId,
-          userId: input.userId,
-          documentId: input.documentId ?? null,
-          sourceDocumentId,
+        exactLinks.push({
           targetDocumentId,
-          metadata: {
-            method: "vector",
-            similarity,
-            sourceDocumentId,
-            targetDocumentId,
-            evidence,
-          },
+          correlationScore,
+          sharedBucketCount: count,
+          edgeCount: count,
+          avgConfidence: 0.95,
         });
-        if (relationshipId) stored++;
-      } catch {
+      }
+
+      if (exactLinks.length > 0) {
+        await this.relationshipStore
+          .saveDocumentLinks(params.userId, params.documentId, exactLinks)
+          .catch(() => 0);
+      }
+
+      const exactRelated = await this.buildRelatedDocumentsFromLinks(
+        params.userId,
+        exactLinks
+      );
+
+      return { crossExactMerges, exactTop, exactRelated };
+    } catch (error) {
+      logger.debug("processExactMerges failed", {
+        userId: params.userId,
+        documentId: params.documentId,
+        error: (error as Error).message,
+      });
+      return { crossExactMerges: 0, exactTop: [], exactRelated: [] };
+    }
+  }
+
+  private async buildRelatedDocumentsFromLinks(
+    userId: string,
+    links: DocumentLinkInput[]
+  ): Promise<RelatedDocumentRow[]> {
+    const targetIds = Array.from(
+      new Set(links.map((link) => link.targetDocumentId).filter(isValidUuid))
+    );
+    if (targetIds.length === 0) return [];
+
+    try {
+      const rows = await queryMany<{ document_id: string; filename: string }>(
+        `SELECT document_id, filename
+         FROM documents
+         WHERE document_id = ANY($1::uuid[]) AND user_id = $2::uuid`,
+        [targetIds, userId]
+      );
+      const filenameMap = new Map(
+        rows.map((row) => [row.document_id, row.filename])
+      );
+      return links
+        .filter((link) => filenameMap.has(link.targetDocumentId))
+        .map((link) => ({
+          documentId: link.targetDocumentId,
+          filename: filenameMap.get(link.targetDocumentId) ?? "Unknown document",
+          correlation: round4(link.correlationScore),
+          sharedConcepts: nonNegativeInt(link.sharedBucketCount),
+          edges: nonNegativeInt(link.edgeCount),
+          avgConfidence: round4(link.avgConfidence),
+        }))
+        .sort((a, b) => b.correlation - a.correlation || b.edges - a.edges)
+        .slice(0, 20);
+    } catch {
+      return [];
+    }
+  }
+
+  private mergeRelatedDocuments(
+    primary: RelatedDocumentRow[],
+    fallback: RelatedDocumentRow[]
+  ): RelatedDocumentRow[] {
+    const map = new Map<string, RelatedDocumentRow>();
+    for (const row of primary) {
+      map.set(row.documentId, { ...row });
+    }
+    for (const row of fallback) {
+      const existing = map.get(row.documentId);
+      if (!existing) {
+        map.set(row.documentId, { ...row });
         continue;
       }
+      existing.correlation = Math.max(existing.correlation, row.correlation);
+      existing.sharedConcepts = Math.max(
+        existing.sharedConcepts,
+        row.sharedConcepts
+      );
+      existing.edges = Math.max(existing.edges, row.edges);
+      if (row.avgConfidence !== undefined) {
+        existing.avgConfidence = Math.max(
+          existing.avgConfidence ?? 0,
+          row.avgConfidence
+        );
+      }
     }
-    return stored;
+    return Array.from(map.values())
+      .sort((a, b) => b.correlation - a.correlation || b.edges - a.edges)
+      .slice(0, 20);
   }
 
-  async clearDocumentLinks(
-    userId: string,
-    sourceDocumentId: string
-  ): Promise<void> {
-    if (!isValidUuid(userId) || !isValidUuid(sourceDocumentId)) return;
-    try {
-      await query(
-        `DELETE FROM document_links
-         WHERE user_id = $1::uuid
-         AND source_document_id = $2::uuid`,
-        [userId, sourceDocumentId]
-      );
-    } catch (error) {
-      logger.warn("clearDocumentLinks failed", {
-        userId,
-        sourceDocumentId,
-        error: (error as Error).message,
+  private mergeTopConnectedMemories(
+    vectorTop: TopConnectedMemoryRow[],
+    exactTop: TopConnectedMemoryRow[],
+    limit: number
+  ): TopConnectedMemoryRow[] {
+    const map = new Map<string, TopConnectedMemoryRow>();
+    for (const memory of exactTop) {
+      map.set(memory.bucketId, memory);
+    }
+    for (const memory of vectorTop) {
+      const existing = map.get(memory.bucketId);
+      if (!existing || memory.confidence > existing.confidence) {
+        map.set(memory.bucketId, memory);
+      }
+    }
+    return Array.from(map.values())
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, limit);
+  }
+
+  private buildSourceEntries(params: CorrelationParams): SourceEntry[] {
+    const entries: SourceEntry[] = [];
+    const seen = new Set<string>();
+    for (const concept of params.concepts) {
+      const label = String(concept.label || "").trim();
+      if (!label) continue;
+      const bucketId = params.bucketIdByLabel.get(normalizeLabel(label));
+      if (!bucketId) continue;
+      const embedding = concept.embedding;
+      if (!this.isValidEmbedding(embedding)) continue;
+      if (seen.has(bucketId)) continue;
+      seen.add(bucketId);
+      entries.push({
+        label,
+        bucketId,
+        embedding: embedding as number[],
       });
     }
+    return entries;
   }
 
-  private async upsertDocumentLinkAbsolute(
-    userId: string,
-    sourceDocumentId: string,
-    link: DocumentLinkInput
-  ): Promise<boolean> {
-    if (!isValidUuid(userId) || !isValidUuid(sourceDocumentId)) {
-      return false;
+  private isValidEmbedding(embedding: number[] | null | undefined): boolean {
+    if (!Array.isArray(embedding)) return false;
+    if (embedding.length !== config.embedding.dimension) return false;
+    let nonZero = false;
+    for (const value of embedding) {
+      if (!Number.isFinite(value)) return false;
+      if (value !== 0) nonZero = true;
     }
-    if (!isValidUuid(link.targetDocumentId)) {
-      return false;
-    }
-    if (link.targetDocumentId === sourceDocumentId) {
-      return false;
-    }
+    return nonZero;
+  }
 
-    try {
-      await query(
-        `INSERT INTO document_links (
-          user_id,
-          source_document_id,
-          target_document_id,
-          correlation_score,
-          shared_bucket_count,
-          edge_count,
-          avg_confidence,
-          updated_at
+  private async collectVectorEdges(
+    params: CorrelationParams,
+    sourceEntries: SourceEntry[],
+    cfg: CorrelationConfig
+  ): Promise<VectorConnectionEdge[]> {
+    const edges: VectorConnectionEdge[] = [];
+    const seen = new Set<string>();
+    const metaCache = new Map<string, BucketMeta>();
+
+    for (const entry of sourceEntries) {
+      if (edges.length >= cfg.maxEdgesPerDocument) break;
+
+      let similar: Array<{ bucketId: string; similarity: number }> = [];
+      try {
+        similar = await this.embeddingStore.searchSimilarForCorrelation(
+          entry.embedding,
+          {
+            userId: params.userId,
+            excludeDocumentId: params.documentId,
+            excludeBucketIds: [entry.bucketId],
+            threshold: cfg.minSimilarity,
+            limit: cfg.maxLinksPerConcept * 3 + 5,
+          }
+        );
+      } catch (error) {
+        logger.debug("Correlation vector search failed", {
+          label: entry.label,
+          error: (error as Error).message,
+        });
+        continue;
+      }
+
+      const candidates = similar
+        .filter(
+          (row) =>
+            row &&
+            typeof row.bucketId === "string" &&
+            row.bucketId !== entry.bucketId &&
+            Number(row.similarity) >= cfg.minSimilarity
         )
-        VALUES ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, now())
-        ON CONFLICT (user_id, source_document_id, target_document_id)
-        DO UPDATE SET
-          correlation_score = EXCLUDED.correlation_score,
-          shared_bucket_count = EXCLUDED.shared_bucket_count,
-          edge_count = EXCLUDED.edge_count,
-          avg_confidence = EXCLUDED.avg_confidence,
-          updated_at = now()`,
-        [
-          userId,
-          sourceDocumentId,
-          link.targetDocumentId,
-          round4(link.correlationScore),
-          nonNegativeInt(link.sharedBucketCount),
-          nonNegativeInt(link.edgeCount),
-          round4(link.avgConfidence),
-        ]
-      );
-      return true;
-    } catch (error) {
-      logger.debug("upsertDocumentLinkAbsolute failed", {
-        userId,
-        sourceDocumentId,
-        targetDocumentId: link.targetDocumentId,
-        error: (error as Error).message,
-      });
-      return false;
+        .sort((a, b) => Number(b.similarity) - Number(a.similarity))
+        .slice(0, cfg.maxLinksPerConcept);
+
+      if (candidates.length === 0) continue;
+
+      const missingIds = candidates
+        .map((candidate) => candidate.bucketId)
+        .filter((bucketId) => !metaCache.has(bucketId));
+
+      if (missingIds.length > 0) {
+        const meta = await this.loadBucketMeta(params.userId, missingIds);
+        for (const [bucketId, value] of meta.entries()) {
+          metaCache.set(bucketId, value);
+        }
+      }
+
+      for (const candidate of candidates) {
+        if (edges.length >= cfg.maxEdgesPerDocument) break;
+        const targetMeta = metaCache.get(candidate.bucketId);
+        if (!targetMeta) continue;
+        if (targetMeta.documentId === params.documentId) continue;
+        const edgeKey = [entry.bucketId, candidate.bucketId].sort().join(":");
+        if (seen.has(edgeKey)) continue;
+        seen.add(edgeKey);
+        const confidence = clampUnit(candidate.similarity);
+        edges.push({
+          sourceBucketId: entry.bucketId,
+          targetBucketId: candidate.bucketId,
+          sourceLabel: entry.label,
+          targetLabel: targetMeta.label,
+          confidence,
+          similarity: confidence,
+          sourceDocumentId: params.documentId,
+          targetDocumentId: targetMeta.documentId,
+          evidence: `${entry.label} -> ${targetMeta.label}`,
+        });
+      }
     }
+
+    return edges;
   }
 
-  async saveDocumentLinks(
+  private async loadBucketMeta(
     userId: string,
-    sourceDocumentId: string,
-    links: DocumentLinkInput[]
-  ): Promise<number> {
-    if (!isValidUuid(userId) || !isValidUuid(sourceDocumentId)) return 0;
-    if (!Array.isArray(links)) return 0;
-    let saved = 0;
-    for (const rawLink of links) {
-      const link = normalizeDocumentLink(rawLink, sourceDocumentId);
-      if (!link) continue;
-      const ok = await this.upsertDocumentLinkAbsolute(
-        userId,
-        sourceDocumentId,
-        link
-      );
-      if (ok) saved++;
-    }
-    return saved;
-  }
-
-  private async getExistingDocumentLinks(
-    userId: string,
-    sourceDocumentId: string
-  ): Promise<Map<string, DocumentLinkInput>> {
-    const result = new Map<string, DocumentLinkInput>();
-    if (!isValidUuid(userId) || !isValidUuid(sourceDocumentId)) {
-      return result;
-    }
+    bucketIds: string[]
+  ): Promise<Map<string, BucketMeta>> {
+    const result = new Map<string, BucketMeta>();
+    if (bucketIds.length === 0) return result;
     try {
       const rows = await queryMany<{
-        target_document_id: string;
-        correlation_score: number;
-        shared_bucket_count: number;
-        edge_count: number;
-        avg_confidence: number;
+        bucket_id: string;
+        canonical: string;
+        document_id: string | null;
       }>(
-        `SELECT target_document_id,
-                correlation_score,
-                shared_bucket_count,
-                edge_count,
-                avg_confidence
-         FROM document_links
-         WHERE user_id = $1::uuid
-         AND source_document_id = $2::uuid`,
-        [userId, sourceDocumentId]
+        `SELECT bucket_id, canonical, document_id
+         FROM buckets
+         WHERE bucket_id = ANY($1::uuid[]) AND user_id = $2`,
+        [bucketIds, userId]
       );
       for (const row of rows) {
-        result.set(row.target_document_id, {
-          targetDocumentId: row.target_document_id,
-          correlationScore: round4(row.correlation_score),
-          sharedBucketCount: nonNegativeInt(row.shared_bucket_count),
-          edgeCount: nonNegativeInt(row.edge_count),
-          avgConfidence: round4(row.avg_confidence),
+        result.set(row.bucket_id, {
+          label: row.canonical,
+          documentId: row.document_id,
         });
       }
     } catch (error) {
-      logger.debug("getExistingDocumentLinks failed", {
+      logger.debug("loadBucketMeta failed", {
         userId,
-        sourceDocumentId,
+        count: bucketIds.length,
         error: (error as Error).message,
       });
     }
     return result;
   }
 
-  private mergeDocumentLink(
-    existing: DocumentLinkInput | undefined,
-    incoming: DocumentLinkInput
-  ): DocumentLinkInput {
-    if (!existing) {
-      return incoming;
-    }
-    const edgeCount = existing.edgeCount + incoming.edgeCount;
-    const avgConfidence =
-      edgeCount > 0
-        ? (existing.avgConfidence * existing.edgeCount +
-            incoming.avgConfidence * incoming.edgeCount) /
-          edgeCount
-        : incoming.avgConfidence;
+  private async buildDocumentLinks(
+    params: CorrelationParams,
+    sourceEntries: SourceEntry[],
+    edges: VectorConnectionEdge[],
+    currentCentroid: number[] | null,
+    currentLabels: Set<string>,
+    cfg: CorrelationConfig
+  ): Promise<DocumentLinkInput[]> {
+    const targetDocs = this.groupTargetDocuments(params.documentId, edges);
+    if (targetDocs.size === 0) return [];
 
-    return {
-      targetDocumentId: incoming.targetDocumentId,
-      correlationScore: round4(
-        Math.max(existing.correlationScore, incoming.correlationScore)
-      ),
-      sharedBucketCount: Math.max(
-        existing.sharedBucketCount,
-        incoming.sharedBucketCount
-      ),
-      edgeCount,
-      avgConfidence: round4(avgConfidence),
-    };
-  }
+    const topTargets = Array.from(targetDocs.values())
+      .sort((a, b) => {
+        const avgA = a.edgeCount > 0 ? a.sumConfidence / a.edgeCount : 0;
+        const avgB = b.edgeCount > 0 ? b.sumConfidence / b.edgeCount : 0;
+        return avgB - avgA || b.edgeCount - a.edgeCount;
+      })
+      .slice(0, cfg.documentTopN);
 
-  async aggregateDocumentLinks(
-    userId: string,
-    documentId: string,
-    options?: {
-      links?: DocumentLinkInput[];
-      topN?: number;
-    }
-  ): Promise<number> {
-    if (!isValidUuid(userId) || !isValidUuid(documentId)) return 0;
-
-    const incomingLinks: DocumentLinkInput[] = [];
-
-    if (options?.links && options.links.length > 0) {
-      for (const rawLink of options.links) {
-        const link = normalizeDocumentLink(rawLink, documentId);
-        if (link) incomingLinks.push(link);
-      }
-    } else {
-      try {
-        const rows = await queryMany<{
-          other_document_id: string;
-          edge_count: number;
-          avg_confidence: number;
-          shared_bucket_count: number;
-        }>(
-          `WITH meta_edges AS (
-            SELECT NULLIF(metadata->>'sourceDocumentId', '') AS source_document_id,
-                   NULLIF(metadata->>'targetDocumentId', '') AS target_document_id,
-                   source_bucket_id,
-                   confidence
-            FROM relationships
-            WHERE user_id = $1::uuid
-            AND metadata IS NOT NULL
-            AND NULLIF(metadata->>'sourceDocumentId', '') IS NOT NULL
-            AND NULLIF(metadata->>'targetDocumentId', '') IS NOT NULL
-            AND NULLIF(metadata->>'sourceDocumentId', '') <> NULLIF(metadata->>'targetDocumentId', '')
-          ), normalized AS (
-            SELECT CASE
-                     WHEN source_document_id = $2::text THEN target_document_id
-                     ELSE source_document_id
-                   END AS other_document_id,
-                   source_bucket_id,
-                   confidence
-            FROM meta_edges
-            WHERE source_document_id = $2::text
-               OR target_document_id = $2::text
-          )
-          SELECT n.other_document_id,
-                 COUNT(*)::int AS edge_count,
-                 COALESCE(AVG(n.confidence), 0)::float AS avg_confidence,
-                 COUNT(DISTINCT n.source_bucket_id)::int AS shared_bucket_count
-          FROM normalized n
-          JOIN documents d ON d.document_id::text = n.other_document_id
-          WHERE d.user_id = $1::uuid
-          AND n.other_document_id IS NOT NULL
-          AND n.other_document_id <> $2::text
-          GROUP BY n.other_document_id`,
-          [userId, documentId]
-        );
-
-        for (const row of rows) {
-          const edgeCount = nonNegativeInt(row.edge_count);
-          const avgConfidence = round4(row.avg_confidence);
-          const correlationScore = round4(
-            0.45 * avgConfidence +
-              0.35 * Math.min(1, edgeCount / 5) +
-              0.2 * Math.min(1, edgeCount / 10)
-          );
-          incomingLinks.push({
-            targetDocumentId: row.other_document_id,
-            correlationScore,
-            sharedBucketCount: nonNegativeInt(row.shared_bucket_count),
-            edgeCount,
-            avgConfidence,
-          });
-        }
-      } catch (error) {
-        logger.error("aggregateDocumentLinks query failed", {
-          userId,
-          documentId,
-          error: (error as Error).message,
-        });
-        return 0;
-      }
-    }
-
-    if (incomingLinks.length === 0) {
-      return 0;
-    }
-
-    const existingLinks = await this.getExistingDocumentLinks(
-      userId,
-      documentId
-    );
-
-    let saved = 0;
-    for (const incoming of incomingLinks) {
-      const existing = existingLinks.get(incoming.targetDocumentId);
-      const merged = this.mergeDocumentLink(existing, incoming);
-      const ok = await this.upsertDocumentLinkAbsolute(
-        userId,
-        documentId,
-        merged
-      );
-      if (ok) saved++;
-    }
-    return saved;
-  }
-
-  async getRelatedDocuments(
-    userId: string,
-    documentId: string,
-    limit?: number
-  ): Promise<RelatedDocumentRow[]> {
-    if (!isValidUuid(userId) || !isValidUuid(documentId)) return [];
-    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit ?? 10)));
-
-    try {
-      const rows = await queryMany<{
-        document_id: string;
-        filename: string;
-        correlation: number;
-        shared_concepts: number;
-        edges: number;
-        avg_confidence: number;
-      }>(
-        `WITH links AS (
-          SELECT CASE
-                   WHEN source_document_id = $2::uuid THEN target_document_id
-                   ELSE source_document_id
-                 END AS other_document_id,
-                 correlation_score,
-                 shared_bucket_count,
-                 edge_count,
-                 avg_confidence
-          FROM document_links
-          WHERE user_id = $1::uuid
-          AND (source_document_id = $2::uuid OR target_document_id = $2::uuid)
-        )
-        SELECT links.other_document_id::text AS document_id,
-               d.filename,
-               MAX(links.correlation_score)::float AS correlation,
-               MAX(links.shared_bucket_count)::int AS shared_concepts,
-               MAX(links.edge_count)::int AS edges,
-               MAX(links.avg_confidence)::float AS avg_confidence
-        FROM links
-        JOIN documents d ON d.document_id = links.other_document_id
-        WHERE d.user_id = $1::uuid
-        AND links.other_document_id <> $2::uuid
-        GROUP BY links.other_document_id, d.filename
-        ORDER BY correlation DESC, edges DESC
-        LIMIT $3`,
-        [userId, documentId, safeLimit]
-      );
-
-      return rows.map((row) => ({
-        documentId: row.document_id,
-        filename: row.filename,
-        correlation: round4(row.correlation),
-        sharedConcepts: nonNegativeInt(row.shared_concepts),
-        edges: nonNegativeInt(row.edges),
-        avgConfidence: round4(row.avg_confidence),
-      }));
-    } catch (error) {
-      logger.error("getRelatedDocuments failed", {
-        userId,
-        documentId,
-        error: (error as Error).message,
-      });
-      return [];
-    }
-  }
-
-  async getTopConnectedMemories(
-    userId: string,
-    documentId: string,
-    limit?: number
-  ): Promise<TopConnectedMemoryRow[]> {
-    if (!isValidUuid(userId) || !isValidUuid(documentId)) return [];
-    const safeLimit = Math.max(1, Math.min(50, Math.floor(limit ?? 10)));
-
-    try {
-      const rows = await queryMany<{
-        bucket_id: string;
-        canonical: string;
-        relation_type: string;
-        confidence: number;
-        document_id: string | null;
-      }>(
-        `SELECT l.connected_bucket_id AS bucket_id,
-                b.canonical,
-                l.relation_type,
-                MAX(l.confidence)::float AS confidence,
-                b.document_id
-         FROM (
-           SELECT CASE
-                    WHEN NULLIF(metadata->>'sourceDocumentId', '') = $2::text
-                    THEN target_bucket_id
-                    ELSE source_bucket_id
-                  END AS connected_bucket_id,
-                  relation_type,
-                  confidence
-           FROM relationships
-           WHERE user_id = $1::uuid
-           AND metadata IS NOT NULL
-           AND (
-             NULLIF(metadata->>'sourceDocumentId', '') = $2::text
-             OR NULLIF(metadata->>'targetDocumentId', '') = $2::text
-           )
-         ) l
-         JOIN buckets b ON b.bucket_id = l.connected_bucket_id
-         WHERE l.connected_bucket_id IS NOT NULL
-         AND (b.document_id IS NULL OR b.document_id::text <> $2::text)
-         GROUP BY l.connected_bucket_id, b.canonical, l.relation_type, b.document_id
-         ORDER BY confidence DESC
-         LIMIT $3`,
-        [userId, documentId, safeLimit * 2]
-      );
-
-      const deduped = new Map<string, TopConnectedMemoryRow>();
-      for (const row of rows) {
-        const existing = deduped.get(row.bucket_id);
-        if (!existing || Number(row.confidence) > existing.confidence) {
-          deduped.set(row.bucket_id, {
-            bucketId: row.bucket_id,
-            label: row.canonical,
-            relationType: row.relation_type,
-            confidence: round4(row.confidence),
-            documentId: row.document_id,
-          });
-        }
-      }
-      return Array.from(deduped.values()).slice(0, safeLimit);
-    } catch (error) {
-      logger.error("getTopConnectedMemories failed", {
-        userId,
-        documentId,
-        error: (error as Error).message,
-      });
-      return [];
-    }
-  }
-
-  async getConnectionStats(
-    userId: string,
-    documentId: string,
-    exactMerges: number = 0
-  ): Promise<ConnectionStatsRow> {
-    const exact = Math.max(0, Math.round(exactMerges));
-
-    if (!isValidUuid(userId) || !isValidUuid(documentId)) {
-      return {
-        exactMerges: exact,
-        semanticConnections: 0,
-        crossDocumentConnections: 0,
-        strongConnections: 0,
-        connectionScore: round4(exact > 0 ? 0.35 : 0),
-      };
-    }
-
-    try {
-      const strongThreshold = 0.75;
-      const row = await queryOne<{
-        semantic: number;
-        cross_document: number;
-        strong: number;
-        avg_confidence: number;
-      }>(
-        `WITH doc_edges AS (
-          SELECT confidence,
-                 NULLIF(metadata->>'sourceDocumentId', '') AS src_doc,
-                 NULLIF(metadata->>'targetDocumentId', '') AS tgt_doc,
-                 COALESCE(metadata->>'method', '') AS method
-          FROM relationships
-          WHERE user_id = $1::uuid
-          AND metadata IS NOT NULL
-          AND (
-            NULLIF(metadata->>'sourceDocumentId', '') = $2::text
-            OR NULLIF(metadata->>'targetDocumentId', '') = $2::text
-          )
-        )
-        SELECT COALESCE(SUM(CASE WHEN method IN ('vector', 'ai') THEN 1 ELSE 0 END), 0)::int AS semantic,
-               COALESCE(SUM(CASE WHEN method IN ('vector', 'ai') AND src_doc IS NOT NULL AND tgt_doc IS NOT NULL AND src_doc <> tgt_doc THEN 1 ELSE 0 END), 0)::int AS cross_document,
-               COALESCE(SUM(CASE WHEN method IN ('vector', 'ai') AND confidence >= $3 THEN 1 ELSE 0 END), 0)::int AS strong,
-               COALESCE(AVG(CASE WHEN method IN ('vector', 'ai') THEN confidence END), 0)::float AS avg_confidence
-        FROM doc_edges`,
-        [userId, documentId, strongThreshold]
-      );
-
-      const semantic = nonNegativeInt(row?.semantic);
-      const cross = nonNegativeInt(row?.cross_document);
-      const strong = nonNegativeInt(row?.strong);
-      const avg = round4(row?.avg_confidence);
-
-      const exactRate = Math.min(1, exact / 2);
-      const semanticRate = Math.min(1, semantic / 5);
-      const crossRate = Math.min(1, cross / 5);
-
-      let connectionScore =
-        0.45 * exactRate +
-        0.3 * semanticRate +
-        0.15 * crossRate +
-        0.1 * avg;
-
-      if (exact > 0 && connectionScore < 0.35) {
-        connectionScore = 0.35;
-      }
-
-      return {
-        exactMerges: exact,
-        semanticConnections: semantic,
-        crossDocumentConnections: cross,
-        strongConnections: strong,
-        connectionScore: round4(connectionScore),
-      };
-    } catch (error) {
-      logger.error("getConnectionStats failed", {
-        userId,
-        documentId,
-        error: (error as Error).message,
-      });
-      return {
-        exactMerges: exact,
-        semanticConnections: 0,
-        crossDocumentConnections: 0,
-        strongConnections: 0,
-        connectionScore: round4(exact > 0 ? 0.35 : 0),
-      };
-    }
-  }
-
-  async expandFromBucketIds(
-    bucketIds: string[],
-    userId?: string | null,
-    limit: number = 40
-  ): Promise<ExpandedEdge[]> {
-    const safeBucketIds = (bucketIds || []).filter(isValidUuid);
-    if (safeBucketIds.length === 0) return [];
-    const safeUserId = userId && isValidUuid(userId) ? userId : null;
-    const results: ExpandedEdge[] = [];
-    const seen = new Set<string>();
-
-    try {
-      const idRows = safeUserId
-        ? await queryMany<{
-            source_bucket_id: string | null;
-            target_bucket_id: string | null;
-            relation_type: string;
-            confidence: number;
-          }>(
-            `SELECT source_bucket_id, target_bucket_id, relation_type, confidence
-             FROM relationships
-             WHERE (source_bucket_id = ANY($1::uuid[]) OR target_bucket_id = ANY($1::uuid[]))
-             AND source_bucket_id IS NOT NULL
-             AND target_bucket_id IS NOT NULL
-             AND (user_id = $2::uuid OR user_id IS NULL)
-             ORDER BY confidence DESC
-             LIMIT $3`,
-            [safeBucketIds, safeUserId, limit * 2]
-          )
-        : await queryMany<{
-            source_bucket_id: string | null;
-            target_bucket_id: string | null;
-            relation_type: string;
-            confidence: number;
-          }>(
-            `SELECT source_bucket_id, target_bucket_id, relation_type, confidence
-             FROM relationships
-             WHERE (source_bucket_id = ANY($1::uuid[]) OR target_bucket_id = ANY($1::uuid[]))
-             AND source_bucket_id IS NOT NULL
-             AND target_bucket_id IS NOT NULL
-             ORDER BY confidence DESC
-             LIMIT $2`,
-            [safeBucketIds, limit * 2]
-          );
-
-      for (const row of idRows) {
-        if (!row.source_bucket_id || !row.target_bucket_id) continue;
-        const key = `${row.source_bucket_id}:${row.target_bucket_id}:${row.relation_type}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        results.push({
-          sourceBucketId: row.source_bucket_id,
-          targetBucketId: row.target_bucket_id,
-          relationType: row.relation_type,
-          confidence: Number(row.confidence),
-        });
-      }
-    } catch (error) {
-      logger.debug("ID-based expansion failed", {
-        error: (error as Error).message,
-      });
-    }
-
-    try {
-      const canonicalRows = await queryMany<{
-        bucket_id: string;
-        canonical: string;
-      }>(
-        `SELECT bucket_id, canonical
-         FROM buckets
-         WHERE bucket_id = ANY($1::uuid[])`,
-        [safeBucketIds]
-      );
-
-      const canonicals = canonicalRows.map((r) => r.canonical);
-
-      if (canonicals.length > 0) {
-        const fallbackRows = safeUserId
-          ? await queryMany<{
-              source_bucket_id: string | null;
-              target_bucket_id: string | null;
-              relation_type: string;
-              confidence: number;
-            }>(
-              `SELECT r.source_bucket_id,
-                      r.target_bucket_id,
-                      r.relation_type,
-                      r.confidence
-               FROM relationships r
-               JOIN buckets b1 ON b1.canonical = r.source_bucket
-               JOIN buckets b2 ON b2.canonical = r.target_bucket
-               WHERE (r.source_bucket = ANY($1::text[]) OR r.target_bucket = ANY($1::text[]))
-               AND (r.source_bucket_id IS NULL OR r.target_bucket_id IS NULL)
-               AND (b1.user_id = $2::uuid OR b1.user_id IS NULL)
-               AND (b2.user_id = $2::uuid OR b2.user_id IS NULL)
-               ORDER BY r.confidence DESC
-               LIMIT $3`,
-              [canonicals, safeUserId, limit * 2]
-            )
-          : await queryMany<{
-              source_bucket_id: string | null;
-              target_bucket_id: string | null;
-              relation_type: string;
-              confidence: number;
-            }>(
-              `SELECT r.source_bucket_id,
-                      r.target_bucket_id,
-                      r.relation_type,
-                      r.confidence
-               FROM relationships r
-               JOIN buckets b1 ON b1.canonical = r.source_bucket
-               JOIN buckets b2 ON b2.canonical = r.target_bucket
-               WHERE (r.source_bucket = ANY($1::text[]) OR r.target_bucket = ANY($1::text[]))
-               AND (r.source_bucket_id IS NULL OR r.target_bucket_id IS NULL)
-               ORDER BY r.confidence DESC
-               LIMIT $2`,
-              [canonicals, limit * 2]
-            );
-
-        for (const row of fallbackRows) {
-          if (!row.source_bucket_id || !row.target_bucket_id) continue;
-          const key = `${row.source_bucket_id}:${row.target_bucket_id}:${row.relation_type}`;
-          if (seen.has(key)) continue;
-          seen.add(key);
-          results.push({
-            sourceBucketId: row.source_bucket_id,
-            targetBucketId: row.target_bucket_id,
-            relationType: row.relation_type,
-            confidence: Number(row.confidence),
-          });
-        }
-      }
-    } catch (error) {
-      logger.debug("Canonical fallback expansion failed", {
-        error: (error as Error).message,
-      });
-    }
-
-    return results.slice(0, limit);
-  }
-
-  async getRelationshipsFrom(
-    bucketId: string,
-    userId?: string | null
-  ): Promise<RelationshipWithMeta[]> {
-    if (!isValidUuid(bucketId)) return [];
-    const safeUserId = userId && isValidUuid(userId) ? userId : null;
-
-    try {
-      const idRows = safeUserId
-        ? await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
-                    b.bucket_id AS connected_bucket_id,
-                    b.canonical AS connected_bucket_name,
-                    b.concept_type AS connected_bucket_type
-             FROM relationships r
-             JOIN buckets b ON b.bucket_id = r.target_bucket_id
-             WHERE r.source_bucket_id = $1::uuid
-             AND (r.user_id = $2::uuid OR r.user_id IS NULL)
-             ORDER BY r.confidence DESC`,
-            [bucketId, safeUserId]
-          )
-        : await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
-                    b.bucket_id AS connected_bucket_id,
-                    b.canonical AS connected_bucket_name,
-                    b.concept_type AS connected_bucket_type
-             FROM relationships r
-             JOIN buckets b ON b.bucket_id = r.target_bucket_id
-             WHERE r.source_bucket_id = $1::uuid
-             ORDER BY r.confidence DESC`,
-            [bucketId]
-          );
-
-      if (idRows.length > 0) {
-        return idRows.map((row) =>
-          mapRowToRelationshipWithMeta(
-            {
-              ...row,
-              source_bucket: bucketId,
-              target_bucket: row.connected_bucket_id,
-            } as any,
-            bucketId
-          )
-        );
-      }
-
-      const sourceRow = await queryOne<{ canonical: string }>(
-        "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
-        [bucketId]
-      );
-      if (!sourceRow) return [];
-
-      const rows = safeUserId
-        ? await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
-                    b.bucket_id AS connected_bucket_id,
-                    b.canonical AS connected_bucket_name,
-                    b.concept_type AS connected_bucket_type
-             FROM relationships r
-             JOIN buckets b ON b.canonical = r.target_bucket
-             WHERE r.source_bucket = $1
-             AND (b.user_id = $2::uuid OR b.user_id IS NULL)
-             ORDER BY r.confidence DESC`,
-            [sourceRow.canonical, safeUserId]
-          )
-        : await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
-                    b.bucket_id AS connected_bucket_id,
-                    b.canonical AS connected_bucket_name,
-                    b.concept_type AS connected_bucket_type
-             FROM relationships r
-             JOIN buckets b ON b.canonical = r.target_bucket
-             WHERE r.source_bucket = $1
-             ORDER BY r.confidence DESC`,
-            [sourceRow.canonical]
-          );
-
-      return rows.map((row) =>
-        mapRowToRelationshipWithMeta(
-          {
-            ...row,
-            source_bucket: bucketId,
-            target_bucket: row.connected_bucket_id,
-          } as any,
-          bucketId
-        )
-      );
-    } catch (error) {
-      logger.error("getRelationshipsFrom failed", {
-        bucketId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async getRelationshipsTo(
-    bucketId: string,
-    userId?: string | null
-  ): Promise<RelationshipWithMeta[]> {
-    if (!isValidUuid(bucketId)) return [];
-    const safeUserId = userId && isValidUuid(userId) ? userId : null;
-
-    try {
-      const idRows = safeUserId
-        ? await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
-                    b.bucket_id AS connected_bucket_id,
-                    b.canonical AS connected_bucket_name,
-                    b.concept_type AS connected_bucket_type
-             FROM relationships r
-             JOIN buckets b ON b.bucket_id = r.source_bucket_id
-             WHERE r.target_bucket_id = $1::uuid
-             AND (r.user_id = $2::uuid OR r.user_id IS NULL)
-             ORDER BY r.confidence DESC`,
-            [bucketId, safeUserId]
-          )
-        : await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
-                    b.bucket_id AS connected_bucket_id,
-                    b.canonical AS connected_bucket_name,
-                    b.concept_type AS connected_bucket_type
-             FROM relationships r
-             JOIN buckets b ON b.bucket_id = r.source_bucket_id
-             WHERE r.target_bucket_id = $1::uuid
-             ORDER BY r.confidence DESC`,
-            [bucketId]
-          );
-
-      if (idRows.length > 0) {
-        return idRows.map((row) =>
-          mapRowToRelationshipWithMeta(
-            {
-              ...row,
-              source_bucket: row.connected_bucket_id,
-              target_bucket: bucketId,
-            } as any,
-            bucketId
-          )
-        );
-      }
-
-      const targetRow = await queryOne<{ canonical: string }>(
-        "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
-        [bucketId]
-      );
-      if (!targetRow) return [];
-
-      const rows = safeUserId
-        ? await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
-                    b.bucket_id AS connected_bucket_id,
-                    b.canonical AS connected_bucket_name,
-                    b.concept_type AS connected_bucket_type
-             FROM relationships r
-             JOIN buckets b ON b.canonical = r.source_bucket
-             WHERE r.target_bucket = $1
-             AND (b.user_id = $2::uuid OR b.user_id IS NULL)
-             ORDER BY r.confidence DESC`,
-            [targetRow.canonical, safeUserId]
-          )
-        : await queryMany<
-            RelationshipRow & {
-              connected_bucket_id: string;
-              connected_bucket_name: string;
-              connected_bucket_type: string;
-            }
-          >(
-            `SELECT r.*,
-                    b.bucket_id AS connected_bucket_id,
-                    b.canonical AS connected_bucket_name,
-                    b.concept_type AS connected_bucket_type
-             FROM relationships r
-             JOIN buckets b ON b.canonical = r.source_bucket
-             WHERE r.target_bucket = $1
-             ORDER BY r.confidence DESC`,
-            [targetRow.canonical]
-          );
-
-      return rows.map((row) =>
-        mapRowToRelationshipWithMeta(
-          {
-            ...row,
-            source_bucket: row.connected_bucket_id,
-            target_bucket: bucketId,
-          } as any,
-          bucketId
-        )
-      );
-    } catch (error) {
-      logger.error("getRelationshipsTo failed", {
-        bucketId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async getAllConnected(
-    bucketId: string,
-    userId?: string | null
-  ): Promise<RelationshipWithMeta[]> {
-    try {
-      const [outgoing, incoming] = await Promise.all([
-        this.getRelationshipsFrom(bucketId, userId),
-        this.getRelationshipsTo(bucketId, userId),
+    const links: DocumentLinkInput[] = [];
+    for (const target of topTargets) {
+      const [targetCentroid, targetLabels] = await Promise.all([
+        this.getDocumentCentroid(params.userId, target.documentId),
+        this.getDocumentLabels(params.userId, target.documentId),
       ]);
 
-      const seen = new Set<string>();
-      const merged: RelationshipWithMeta[] = [];
-
-      for (const rel of outgoing) {
-        if (!seen.has(rel.relationshipId)) {
-          seen.add(rel.relationshipId);
-          merged.push(rel);
-        }
-      }
-      for (const rel of incoming) {
-        if (!seen.has(rel.relationshipId)) {
-          seen.add(rel.relationshipId);
-          merged.push(rel);
-        }
-      }
-      return merged;
-    } catch (error) {
-      logger.error("getAllConnected failed", {
-        bucketId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async getMultiHop(
-    startBucketIds: string[],
-    maxHops: number = 2,
-    userId?: string | null
-  ): Promise<Relationship[]> {
-    const safeStartIds = (startBucketIds || []).filter(isValidUuid);
-    if (safeStartIds.length === 0) return [];
-    if (maxHops < 1) return [];
-
-    const visited = new Set<string>(safeStartIds);
-    let currentLevel = new Set<string>(safeStartIds);
-    const allRelationships: Relationship[] = [];
-
-    for (let hop = 0; hop < maxHops; hop++) {
-      const nextLevel = new Set<string>();
-      const edges = await this.expandFromBucketIds(
-        Array.from(currentLevel),
-        userId,
-        100
+      const avgConfidence = clampUnit(
+        target.edgeCount > 0 ? target.sumConfidence / target.edgeCount : 0
+      );
+      const centroidSimilarity =
+        currentCentroid && targetCentroid
+          ? cosineSimilarity(currentCentroid, targetCentroid)
+          : null;
+      const sharedConceptJaccard = jaccardSimilarity(currentLabels, targetLabels);
+      const crossEdgeDensity = Math.min(
+        1,
+        target.edgeCount /
+          Math.max(1, Math.min(sourceEntries.length, Math.max(1, targetLabels.size)))
       );
 
-      for (const edge of edges) {
-        allRelationships.push({
-          relationshipId: `${edge.sourceBucketId}:${edge.targetBucketId}:${edge.relationType}`,
-          sourceBucket: edge.sourceBucketId,
-          targetBucket: edge.targetBucketId,
-          relationType: edge.relationType as RelationshipType,
-          confidence: edge.confidence,
-          sourceText: null,
-        } as Relationship);
+      const correlationScore =
+        centroidSimilarity === null
+          ? clampUnit(
+              0.55 * avgConfidence +
+                0.25 * sharedConceptJaccard +
+                0.2 * crossEdgeDensity
+            )
+          : clampUnit(
+              0.45 * centroidSimilarity +
+                0.35 * sharedConceptJaccard +
+                0.2 * crossEdgeDensity
+            );
 
-        const other = currentLevel.has(edge.sourceBucketId)
-          ? edge.targetBucketId
-          : edge.sourceBucketId;
-        if (!visited.has(other)) {
-          visited.add(other);
-          nextLevel.add(other);
-        }
-      }
-
-      currentLevel = nextLevel;
-      if (currentLevel.size === 0) break;
+      links.push({
+        targetDocumentId: target.documentId,
+        correlationScore,
+        sharedBucketCount: target.shared.size,
+        edgeCount: target.edgeCount,
+        avgConfidence,
+      });
     }
 
-    return this.deduplicateRelationships(allRelationships);
+    return links;
   }
 
-  async strengthenCoAccess(bucketIds: string[]): Promise<number> {
-    const safeBucketIds = (bucketIds || []).filter(isValidUuid);
-    if (safeBucketIds.length < 2) return 0;
-    let updated = 0;
-
-    for (let i = 0; i < safeBucketIds.length; i++) {
-      for (let j = i + 1; j < safeBucketIds.length; j++) {
-        try {
-          const result = await query(
-            `UPDATE relationships
-             SET confidence = LEAST(1.0, confidence + 0.05)
-             WHERE (source_bucket_id = $1::uuid AND target_bucket_id = $2::uuid)
-                OR (source_bucket_id = $2::uuid AND target_bucket_id = $1::uuid)`,
-            [safeBucketIds[i], safeBucketIds[j]]
-          );
-          updated += result.rowCount ?? 0;
-        } catch {}
-      }
-    }
-
-    const canonicalMap = new Map<string, string>();
-    for (const bucketId of safeBucketIds) {
-      try {
-        const row = await queryOne<{ canonical: string }>(
-          "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
-          [bucketId]
-        );
-        if (row) canonicalMap.set(bucketId, row.canonical);
-      } catch {}
-    }
-
-    const resolvedIds = Array.from(canonicalMap.keys());
-    for (let i = 0; i < resolvedIds.length; i++) {
-      for (let j = i + 1; j < resolvedIds.length; j++) {
-        const canonA = canonicalMap.get(resolvedIds[i])!;
-        const canonB = canonicalMap.get(resolvedIds[j])!;
-        try {
-          const result = await query(
-            `UPDATE relationships
-             SET confidence = LEAST(1.0, confidence + 0.05)
-             WHERE (source_bucket = $1 AND target_bucket = $2)
-                OR (source_bucket = $2 AND target_bucket = $1)`,
-            [canonA, canonB]
-          );
-          updated += result.rowCount ?? 0;
-        } catch {}
-      }
-    }
-
-    return updated;
-  }
-
-  async getTotalCount(): Promise<number> {
-    try {
-      const row = await queryOne<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM relationships"
-      );
-      return row?.count ?? 0;
-    } catch (error) {
-      logger.error("getTotalCount failed", {
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async getCountByType(): Promise<Record<string, number>> {
-    try {
-      const rows = await queryMany<{ relation_type: string; count: number }>(
-        "SELECT relation_type, COUNT(*)::int AS count FROM relationships GROUP BY relation_type"
-      );
-      const result: Record<string, number> = {};
-      for (const row of rows) {
-        result[row.relation_type] = row.count;
-      }
-      return result;
-    } catch (error) {
-      logger.error("getCountByType failed", {
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async cleanupOrphaned(): Promise<number> {
-    try {
-      const result = await query(
-        `DELETE FROM relationships
-         WHERE (source_bucket_id IS NOT NULL AND source_bucket_id NOT IN (SELECT bucket_id FROM buckets))
-            OR (target_bucket_id IS NOT NULL AND target_bucket_id NOT IN (SELECT bucket_id FROM buckets))
-            OR (source_bucket_id IS NULL AND source_bucket NOT IN (SELECT canonical FROM buckets))
-            OR (target_bucket_id IS NULL AND target_bucket NOT IN (SELECT canonical FROM buckets))`
-      );
-      const deleted = result.rowCount ?? 0;
-      if (deleted > 0) {
-        logger.info("Cleaned up orphaned relationships", { deleted });
-      }
-      return deleted;
-    } catch (error) {
-      logger.error("cleanupOrphaned failed", {
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async deleteByBucket(bucketId: string): Promise<number> {
-    if (!isValidUuid(bucketId)) return 0;
-    try {
-      const canonicalRow = await queryOne<{ canonical: string }>(
-        "SELECT canonical FROM buckets WHERE bucket_id = $1::uuid",
-        [bucketId]
-      );
-
-      if (!canonicalRow) {
-        const result = await query(
-          `DELETE FROM relationships
-           WHERE source_bucket_id = $1::uuid
-              OR target_bucket_id = $1::uuid`,
-          [bucketId]
-        );
-        return result.rowCount ?? 0;
-      }
-
-      const result = await query(
-        `DELETE FROM relationships
-         WHERE source_bucket_id = $1::uuid
-            OR target_bucket_id = $1::uuid
-            OR source_bucket = $2
-            OR target_bucket = $2`,
-        [bucketId, canonicalRow.canonical]
-      );
-      return result.rowCount ?? 0;
-    } catch (error) {
-      logger.error("deleteByBucket failed", {
-        bucketId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async deleteRelationship(relationshipId: string): Promise<void> {
-    try {
-      await query(
-        "DELETE FROM relationships WHERE relationship_id = $1",
-        [relationshipId]
-      );
-    } catch (error) {
-      logger.error("deleteRelationship failed", {
-        relationshipId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async getByType(
-    relationType: RelationshipType,
-    limit: number = 50
-  ): Promise<Relationship[]> {
-    try {
-      const rows = await queryMany<RelationshipRow>(
-        "SELECT * FROM relationships WHERE relation_type = $1 ORDER BY confidence DESC LIMIT $2",
-        [relationType, limit]
-      );
-      return rows.map(mapRowToRelationship);
-    } catch (error) {
-      logger.error("getByType failed", {
-        relationType,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async getAll(): Promise<Relationship[]> {
-    try {
-      const rows = await queryMany<RelationshipRow>(
-        "SELECT * FROM relationships ORDER BY created_at DESC"
-      );
-      return rows.map(mapRowToRelationship);
-    } catch (error) {
-      logger.error("getAll failed", {
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async batchCreate(
-    paramsList: RelationshipCreateParamsExtended[]
-  ): Promise<number> {
-    if (paramsList.length === 0) return 0;
-    let created = 0;
-    try {
-      await withTransaction(async () => {
-        for (const params of paramsList) {
-          try {
-            const id = await this.createRelationship(params);
-            if (id) created++;
-          } catch {}
-        }
-      });
-    } catch (error) {
-      logger.error("batchCreate transaction failed", {
-        total: paramsList.length,
-        created,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-    return created;
-  }
-
-  private deduplicateRelationships(
-    relationships: Relationship[]
-  ): Relationship[] {
-    const seen = new Set<string>();
-    const deduplicated: Relationship[] = [];
-    for (const rel of relationships) {
-      const key = `${rel.sourceBucket}:${rel.targetBucket}:${rel.relationType}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      deduplicated.push(rel);
-    }
-    return deduplicated;
-  }
-}
-
-let relationshipStoreInstance: RelationshipStore | null = null;
-
-export function getRelationshipStore(): RelationshipStore {
-  if (!relationshipStoreInstance) {
-    relationshipStoreInstance = new RelationshipStore();
-  }
-  return relationshipStoreInstance;
-}
-
-
-================================================================================
-FILE: src/memory/reminder-engine.ts
-================================================================================
-
-import config from "../config";
-import logger from "../utils/logger";
-import { query, queryOne, queryMany } from "../database";
-import {
-  Reminder,
-  ReminderRow,
-  ReminderMemory,
-  ReminderCheckResult,
-  Contradiction,
-  ContradictionRow,
-  ContradictionCheckResult,
-  createReminder,
-  mapRowToReminder,
-  mapRowToContradiction,
-  emptyReminderCheck,
-  emptyContradictionCheck,
-  serializeReminderMemories,
-  deserializeReminderMemories,
-} from "../models/reminder.model";
-import { categorize, getCurrentStrength } from "./decay";
-import type { BucketRow } from "../models/bucket.model";
-import { v4 as uuidv4 } from "uuid";
-
-interface BucketWithComputedStrength {
-  bucketId: string;
-  canonical: string;
-  importance: number;
-  strength: number;
-  decayRate: number;
-  lastAccessed: Date;
-  computedStrength: number;
-  category: string;
-  daysSinceAccess: number;
-}
-
-export class ReminderEngine {
-  async scanForCriticalMemories(): Promise<ReminderMemory[]> {
-    try {
-      const rows = await queryMany<BucketRow>(
-        "SELECT * FROM buckets WHERE importance >= $1",
-        [config.reminder.minImportance]
-      );
-
-      const criticalMemories: ReminderMemory[] = [];
-
-      for (const row of rows) {
-        const strength = Number(row.strength);
-        const decayRate = Number(row.decay_rate);
-        const lastAccessed = new Date(row.last_accessed);
-        const now = Date.now();
-        const daysSinceAccess = (now - lastAccessed.getTime()) / (1000 * 60 * 60 * 24);
-        const computedStrength = getCurrentStrength({ strength, decayRate, lastAccessed });
-        const category = categorize(computedStrength);
-
-        if (category === "critical" || category === "forgotten") {
-          criticalMemories.push({
-            bucketId: row.bucket_id,
-            canonical: row.canonical,
-            strength: computedStrength,
-            importance: Number(row.importance),
-            daysSinceAccess: Math.round(daysSinceAccess * 10) / 10,
-          });
-        }
-      }
-
-      criticalMemories.sort((a, b) => {
-        const importanceDiff = b.importance - a.importance;
-        if (importanceDiff !== 0) return importanceDiff;
-        return a.strength - b.strength;
-      });
-
-      logger.debug("Critical memory scan complete", {
-        totalScanned: rows.length,
-        criticalFound: criticalMemories.length,
-      });
-
-      return criticalMemories;
-    } catch (error) {
-      logger.error("scanForCriticalMemories failed", {
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async generateReminder(
-    userId: string,
-    criticalMemories: ReminderMemory[]
-  ): Promise<Reminder> {
-    if (criticalMemories.length === 0) {
-      throw new Error("Cannot generate reminder from empty critical memories");
-    }
-
-    const topMemories = criticalMemories.slice(0, config.reminder.maxTopicsShown);
-    const reminder = createReminder({ userId, memories: topMemories });
-
-    try {
-      const reminderId = uuidv4();
-      const memoriesJson = serializeReminderMemories(reminder.memories);
-
-      await query(
-        `INSERT INTO reminders (reminder_id, user_id, message, memories, dismissed)
-         VALUES ($1, $2, $3, $4::jsonb, false)`,
-        [reminderId, userId, reminder.message, memoriesJson]
-      );
-
-      reminder.reminderId = reminderId;
-
-      logger.info("Reminder generated", {
-        reminderId,
-        userId,
-        memoryCount: topMemories.length,
-      });
-
-      return reminder;
-    } catch (error) {
-      logger.error("generateReminder failed", {
-        userId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async checkForContradictions(
-    newLabel: string,
-    newDefinition: string,
-    existingBuckets: Array<{ bucketId: string; canonical: string; definition: string }>
-  ): Promise<Contradiction[]> {
-    const contradictions: Contradiction[] = [];
-    const normalizedNew = newLabel.toLowerCase().trim();
-
-    for (const bucket of existingBuckets) {
-      const normalizedExisting = bucket.canonical.toLowerCase().trim();
-
-      if (normalizedExisting !== normalizedNew) continue;
-      if (!bucket.definition || !newDefinition) continue;
-
-      const isContradiction = await this.detectContradiction(
-        bucket.definition,
-        newDefinition
-      );
-
-      if (isContradiction) {
-        contradictions.push({
-          contradictionId: "",
-          userId: "",
-          existingBucketId: bucket.bucketId,
-          newInformation: newDefinition,
-          conflictDescription: `Conflicting definitions for "${newLabel}": existing says "${bucket.definition.substring(0, 100)}", new says "${newDefinition.substring(0, 100)}"`,
-          resolved: false,
-          createdAt: new Date(),
-        });
-      }
-    }
-
-    return contradictions;
-  }
-
-  async storeContradiction(
-    contradiction: Contradiction,
-    userId: string
-  ): Promise<string> {
-    try {
-      const contradictionId = uuidv4();
-
-      await query(
-        `INSERT INTO contradictions (contradiction_id, user_id, existing_bucket_id, new_information, conflict_description, resolved)
-         VALUES ($1, $2, $3, $4, $5, false)`,
-        [
-          contradictionId,
-          userId,
-          contradiction.existingBucketId,
-          contradiction.newInformation,
-          contradiction.conflictDescription,
-        ]
-      );
-
-      logger.debug("Contradiction stored", {
-        contradictionId,
-        existingBucketId: contradiction.existingBucketId,
-      });
-
-      return contradictionId;
-    } catch (error) {
-      logger.error("storeContradiction failed", {
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async getActiveReminders(userId: string): Promise<Reminder[]> {
-    try {
-      const rows = await queryMany<ReminderRow>(
-        `SELECT * FROM reminders
-         WHERE user_id = $1 AND dismissed = false
-         ORDER BY created_at DESC`,
-        [userId]
-      );
-
-      return rows.map((row) => {
-        const memories = deserializeReminderMemories(
-          (row as ReminderRow & { memories: string | null }).memories ?? null
-        );
-        return mapRowToReminder(row, memories);
-      });
-    } catch (error) {
-      logger.error("getActiveReminders failed", {
-        userId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async getAllReminders(userId: string): Promise<Reminder[]> {
-    try {
-      const rows = await queryMany<ReminderRow>(
-        `SELECT * FROM reminders
-         WHERE user_id = $1
-         ORDER BY created_at DESC`,
-        [userId]
-      );
-
-      return rows.map((row) => {
-        const memories = deserializeReminderMemories(
-          (row as ReminderRow & { memories: string | null }).memories ?? null
-        );
-        return mapRowToReminder(row, memories);
-      });
-    } catch (error) {
-      logger.error("getAllReminders failed", {
-        userId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async dismissReminder(reminderId: string): Promise<boolean> {
-    try {
-      const result = await query(
-        `UPDATE reminders
-         SET dismissed = true
-         WHERE reminder_id = $1`,
-        [reminderId]
-      );
-
-      const dismissed = (result.rowCount ?? 0) > 0;
-
-      if (dismissed) {
-        logger.debug("Reminder dismissed", { reminderId });
-      }
-
-      return dismissed;
-    } catch (error) {
-      logger.error("dismissReminder failed", {
-        reminderId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async takeAction(reminderId: string, action: string): Promise<boolean> {
-    try {
-      const validActions = ["keep_active", "archive", "boost"];
-      if (!validActions.includes(action)) {
-        throw new Error(`Invalid action: ${action}. Must be one of: ${validActions.join(", ")}`);
-      }
-
-      const result = await query(
-        `UPDATE reminders
-         SET action_taken = $1, dismissed = true
-         WHERE reminder_id = $2`,
-        [action, reminderId]
-      );
-
-      return (result.rowCount ?? 0) > 0;
-    } catch (error) {
-      logger.error("takeAction failed", {
-        reminderId,
-        action,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async resolveContradiction(contradictionId: string): Promise<boolean> {
-    try {
-      const result = await query(
-        `UPDATE contradictions
-         SET resolved = true
-         WHERE contradiction_id = $1`,
-        [contradictionId]
-      );
-
-      return (result.rowCount ?? 0) > 0;
-    } catch (error) {
-      logger.error("resolveContradiction failed", {
-        contradictionId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async getUnresolvedContradictions(userId: string): Promise<Contradiction[]> {
-    try {
-      const rows = await queryMany<ContradictionRow>(
-        `SELECT * FROM contradictions
-         WHERE user_id = $1 AND resolved = false
-         ORDER BY created_at DESC`,
-        [userId]
-      );
-
-      return rows.map(mapRowToContradiction);
-    } catch (error) {
-      logger.error("getUnresolvedContradictions failed", {
-        userId,
-        error: (error as Error).message,
-      });
-      throw error;
-    }
-  }
-
-  async checkAndGenerate(userId: string): Promise<ReminderCheckResult> {
-    try {
-      const critical = await this.scanForCriticalMemories();
-
-      if (critical.length === 0) {
-        return emptyReminderCheck();
-      }
-
-      const recentReminders = await this.getActiveReminders(userId);
-      if (recentReminders.length > 0) {
-        const lastReminder = recentReminders[0];
-        const hoursSinceLastReminder =
-          (Date.now() - lastReminder.createdAt.getTime()) / (1000 * 60 * 60);
-
-        if (hoursSinceLastReminder < config.reminder.checkIntervalHours) {
-          logger.debug("Skipping reminder: too recent", {
-            hoursSinceLastReminder: Math.round(hoursSinceLastReminder * 10) / 10,
-            required: config.reminder.checkIntervalHours,
-          });
-          return {
-            hasReminders: true,
-            reminder: lastReminder,
-            criticalCount: critical.length,
-          };
-        }
-      }
-
-      const reminder = await this.generateReminder(userId, critical);
-
-      return {
-        hasReminders: true,
-        reminder,
-        criticalCount: critical.length,
+  private groupTargetDocuments(
+    sourceDocumentId: string,
+    edges: VectorConnectionEdge[]
+  ): Map<string, TargetDocumentStat> {
+    const result = new Map<string, TargetDocumentStat>();
+    for (const edge of edges) {
+      const targetDocumentId = edge.targetDocumentId;
+      if (!targetDocumentId || targetDocumentId === sourceDocumentId) continue;
+      const existing = result.get(targetDocumentId) ?? {
+        documentId: targetDocumentId,
+        edgeCount: 0,
+        sumConfidence: 0,
+        shared: new Set<string>(),
       };
+      existing.edgeCount++;
+      existing.sumConfidence += clampUnit(edge.confidence);
+      existing.shared.add(edge.sourceBucketId);
+      result.set(targetDocumentId, existing);
+    }
+    return result;
+  }
+
+  private async getDocumentCentroid(
+    userId: string,
+    documentId: string
+  ): Promise<number[] | null> {
+    try {
+      const rows = await queryMany<{ vector: string }>(
+        `SELECT e.vector::text AS vector
+         FROM embeddings e
+         JOIN buckets b ON b.bucket_id = e.bucket_id
+         WHERE b.user_id = $1 AND b.document_id = $2
+         ORDER BY b.strength DESC, b.importance DESC
+         LIMIT 100`,
+        [userId, documentId]
+      );
+      const vectors: number[][] = [];
+      for (const row of rows) {
+        const vector = deserializeVector(row.vector);
+        if (vector.length === config.embedding.dimension) {
+          vectors.push(vector);
+        }
+      }
+      return averageVectors(vectors);
     } catch (error) {
-      logger.error("checkAndGenerate failed", {
+      logger.debug("getDocumentCentroid failed", {
         userId,
+        documentId,
         error: (error as Error).message,
       });
-      throw error;
+      return null;
     }
   }
 
-  private async detectContradiction(
-    existingDefinition: string,
-    newDefinition: string
-  ): Promise<boolean> {
-    const existingLower = existingDefinition.toLowerCase();
-    const newLower = newDefinition.toLowerCase();
-
-    if (existingLower === newLower) return false;
-
-    const negationPatterns = [
-      { positive: "is", negative: "is not" },
-      { positive: "can", negative: "cannot" },
-      { positive: "does", negative: "does not" },
-      { positive: "will", negative: "will not" },
-      { positive: "should", negative: "should not" },
-      { positive: "always", negative: "never" },
-      { positive: "increases", negative: "decreases" },
-      { positive: "enables", negative: "disables" },
-      { positive: "true", negative: "false" },
-      { positive: "correct", negative: "incorrect" },
-      { positive: "valid", negative: "invalid" },
-    ];
-
-    for (const pattern of negationPatterns) {
-      const existingHasPositive = existingLower.includes(pattern.positive);
-      const newHasNegative = newLower.includes(pattern.negative);
-      const existingHasNegative = existingLower.includes(pattern.negative);
-      const newHasPositive = newLower.includes(pattern.positive);
-
-      if ((existingHasPositive && newHasNegative) || (existingHasNegative && newHasPositive)) {
-        return true;
-      }
+  private async getDocumentLabels(
+    userId: string,
+    documentId: string
+  ): Promise<Set<string>> {
+    try {
+      const rows = await queryMany<{ canonical: string }>(
+        `SELECT canonical
+         FROM buckets
+         WHERE user_id = $1 AND document_id = $2
+         ORDER BY strength DESC, importance DESC
+         LIMIT 200`,
+        [userId, documentId]
+      );
+      return new Set(
+        rows
+          .map((row) => normalizeLabel(row.canonical))
+          .filter((label) => label.length > 0)
+      );
+    } catch (error) {
+      logger.debug("getDocumentLabels failed", {
+        userId,
+        documentId,
+        error: (error as Error).message,
+      });
+      return new Set();
     }
-
-    return false;
   }
 }
 
-let reminderEngineInstance: ReminderEngine | null = null;
+let correlationEngineInstance: CorrelationEngine | null = null;
 
-export function getReminderEngine(): ReminderEngine {
-  if (!reminderEngineInstance) {
-    reminderEngineInstance = new ReminderEngine();
+export function getCorrelationEngine(deps?: {
+  embeddingStore?: EmbeddingStore;
+  relationshipStore?: RelationshipStore;
+}): CorrelationEngine {
+  if (!correlationEngineInstance) {
+    correlationEngineInstance = new CorrelationEngine(deps);
   }
-  return reminderEngineInstance;
+  return correlationEngineInstance;
 }
+
+export async function runCorrelation(
+  params: CorrelationParams
+): Promise<CorrelationResult> {
+  return getCorrelationEngine().run(params);
+}
+
+
+================================================================================
+FILE: src/scripts/init-db.sql
+================================================================================
+
+CREATE TABLE IF NOT EXISTS users (
+  user_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  email VARCHAR(320) NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  display_name VARCHAR(100) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL,
+  title VARCHAR(500) NOT NULL DEFAULT 'New conversation',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  message_count INT NOT NULL DEFAULT 0,
+  CONSTRAINT fk_sessions_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS messages (
+  message_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  session_id UUID NOT NULL,
+  role VARCHAR(20) NOT NULL,
+  content TEXT NOT NULL,
+  timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT fk_messages_session FOREIGN KEY (session_id) REFERENCES sessions (session_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS raw_chunks (
+  chunk_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  message_id UUID,
+  text TEXT NOT NULL,
+  metadata JSONB,
+  CONSTRAINT fk_raw_chunks_message FOREIGN KEY (message_id) REFERENCES messages (message_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS buckets (
+  bucket_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  canonical VARCHAR(500) NOT NULL,
+  normalized VARCHAR(500) NOT NULL,
+  strength DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  importance INT NOT NULL DEFAULT 5,
+  concept_type VARCHAR(50) NOT NULL DEFAULT 'fact',
+  last_accessed TIMESTAMPTZ NOT NULL DEFAULT now(),
+  access_count INT NOT NULL DEFAULT 1,
+  decay_rate DOUBLE PRECISION NOT NULL DEFAULT 0.15,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS bucket_items (
+  item_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  bucket_id UUID NOT NULL,
+  label VARCHAR(500) NOT NULL,
+  definition TEXT,
+  source TEXT,
+  timestamp TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT fk_bucket_items_bucket FOREIGN KEY (bucket_id) REFERENCES buckets (bucket_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS embeddings (
+  embedding_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  bucket_id UUID NOT NULL,
+  vector VECTOR(1024) NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT fk_embeddings_bucket FOREIGN KEY (bucket_id) REFERENCES buckets (bucket_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS relationships (
+  relationship_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  source_bucket VARCHAR(500) NOT NULL,
+  target_bucket VARCHAR(500) NOT NULL,
+  relation_type VARCHAR(50) NOT NULL,
+  confidence DOUBLE PRECISION NOT NULL DEFAULT 0.5,
+  source_text TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT uq_relationship UNIQUE (source_bucket, target_bucket, relation_type)
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+  document_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  filename VARCHAR(500) NOT NULL,
+  file_type VARCHAR(50) NOT NULL,
+  content TEXT,
+  content_hash VARCHAR(64),
+  s3_key VARCHAR(1000),
+  uploaded_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS reminders (
+  reminder_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL,
+  message TEXT NOT NULL,
+  memories JSONB,
+  dismissed BOOLEAN NOT NULL DEFAULT false,
+  action_taken VARCHAR(50),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT fk_reminders_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS contradictions (
+  contradiction_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL,
+  existing_bucket_id UUID NOT NULL,
+  new_information TEXT NOT NULL,
+  conflict_description TEXT NOT NULL,
+  resolved BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CONSTRAINT fk_contradictions_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_contradictions_bucket FOREIGN KEY (existing_bucket_id) REFERENCES buckets (bucket_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS processing_jobs (
+  job_id UUID PRIMARY KEY,
+  user_id UUID NOT NULL,
+  file_id UUID,
+  filename VARCHAR(500) NOT NULL,
+  file_type VARCHAR(50) NOT NULL,
+  format VARCHAR(50) NOT NULL,
+  mime_type VARCHAR(255),
+  size_bytes BIGINT NOT NULL DEFAULT 0,
+  s3_key VARCHAR(1000),
+  status VARCHAR(50) NOT NULL DEFAULT 'queued',
+  stage VARCHAR(50) NOT NULL DEFAULT 'uploaded',
+  progress INT NOT NULL DEFAULT 0,
+  message TEXT,
+  result JSONB,
+  error TEXT,
+  started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  completed_at TIMESTAMPTZ,
+  CONSTRAINT fk_processing_jobs_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_processing_jobs_file FOREIGN KEY (file_id) REFERENCES documents (document_id) ON DELETE SET NULL
+);
+
+ALTER TABLE users ADD COLUMN IF NOT EXISTS is_sandbox BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS upload_count INT NOT NULL DEFAULT 0;
+
+ALTER TABLE buckets ADD COLUMN IF NOT EXISTS user_id UUID;
+ALTER TABLE buckets ADD COLUMN IF NOT EXISTS document_id UUID;
+
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS user_id UUID;
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64);
+ALTER TABLE documents ADD COLUMN IF NOT EXISTS s3_key VARCHAR(1000);
+
+ALTER TABLE raw_chunks ADD COLUMN IF NOT EXISTS document_id UUID;
+ALTER TABLE raw_chunks ALTER COLUMN message_id DROP NOT NULL;
+
+ALTER TABLE relationships ADD COLUMN IF NOT EXISTS user_id UUID;
+ALTER TABLE relationships ADD COLUMN IF NOT EXISTS source_bucket_id UUID;
+ALTER TABLE relationships ADD COLUMN IF NOT EXISTS target_bucket_id UUID;
+ALTER TABLE relationships ADD COLUMN IF NOT EXISTS metadata JSONB;
+
+ALTER TABLE buckets ADD CONSTRAINT fk_buckets_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE;
+ALTER TABLE buckets ADD CONSTRAINT fk_buckets_document FOREIGN KEY (document_id) REFERENCES documents (document_id) ON DELETE SET NULL;
+
+ALTER TABLE documents ADD CONSTRAINT fk_documents_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE;
+
+ALTER TABLE raw_chunks ADD CONSTRAINT fk_raw_chunks_document FOREIGN KEY (document_id) REFERENCES documents (document_id) ON DELETE CASCADE;
+
+ALTER TABLE relationships ADD CONSTRAINT fk_relationships_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE;
+ALTER TABLE relationships ADD CONSTRAINT fk_relationships_source_bucket FOREIGN KEY (source_bucket_id) REFERENCES buckets (bucket_id) ON DELETE CASCADE;
+ALTER TABLE relationships ADD CONSTRAINT fk_relationships_target_bucket FOREIGN KEY (target_bucket_id) REFERENCES buckets (bucket_id) ON DELETE CASCADE;
+
+CREATE TABLE IF NOT EXISTS document_links (
+  user_id UUID NOT NULL,
+  source_document_id UUID NOT NULL,
+  target_document_id UUID NOT NULL,
+  correlation_score DOUBLE PRECISION NOT NULL DEFAULT 0,
+  shared_bucket_count INT NOT NULL DEFAULT 0,
+  edge_count INT NOT NULL DEFAULT 0,
+  avg_confidence DOUBLE PRECISION NOT NULL DEFAULT 0,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, source_document_id, target_document_id),
+  CONSTRAINT fk_document_links_user FOREIGN KEY (user_id) REFERENCES users (user_id) ON DELETE CASCADE,
+  CONSTRAINT fk_document_links_source FOREIGN KEY (source_document_id) REFERENCES documents (document_id) ON DELETE CASCADE,
+  CONSTRAINT fk_document_links_target FOREIGN KEY (target_document_id) REFERENCES documents (document_id) ON DELETE CASCADE,
+  CONSTRAINT chk_document_links_no_self CHECK (source_document_id <> target_document_id),
+  CONSTRAINT chk_document_links_score CHECK (correlation_score >= 0 AND correlation_score <= 1),
+  CONSTRAINT chk_document_links_confidence CHECK (avg_confidence >= 0 AND avg_confidence <= 1)
+);
+
+UPDATE buckets SET user_id = (SELECT user_id FROM users ORDER BY created_at ASC LIMIT 1) WHERE user_id IS NULL;
+UPDATE documents SET user_id = (SELECT user_id FROM users ORDER BY created_at ASC LIMIT 1) WHERE user_id IS NULL;
+
+UPDATE relationships r SET source_bucket_id = b.bucket_id FROM buckets b WHERE r.source_bucket = b.canonical AND r.source_bucket_id IS NULL;
+UPDATE relationships r SET target_bucket_id = b.bucket_id FROM buckets b WHERE r.target_bucket = b.canonical AND r.target_bucket_id IS NULL;
+UPDATE relationships r SET user_id = b.user_id FROM buckets b WHERE r.source_bucket_id = b.bucket_id AND r.user_id IS NULL;
+UPDATE relationships r SET user_id = b.user_id FROM buckets b WHERE r.target_bucket_id = b.bucket_id AND r.user_id IS NULL;
+
+DROP INDEX IF EXISTS idx_buckets_normalized;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_sandbox ON users (is_sandbox, expires_at) WHERE is_sandbox = true;
+
+CREATE INDEX IF NOT EXISTS idx_sessions_user_id ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions (updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages (session_id);
+CREATE INDEX IF NOT EXISTS idx_messages_timestamp ON messages (timestamp DESC);
+
+CREATE INDEX IF NOT EXISTS idx_raw_chunks_message_id ON raw_chunks (message_id) WHERE message_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_raw_chunks_document_id ON raw_chunks (document_id) WHERE document_id IS NOT NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_buckets_user_normalized ON buckets (user_id, normalized) WHERE user_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_buckets_null_normalized ON buckets (normalized) WHERE user_id IS NULL;
+CREATE INDEX IF NOT EXISTS idx_buckets_strength ON buckets (strength DESC);
+CREATE INDEX IF NOT EXISTS idx_buckets_concept_type ON buckets (concept_type);
+CREATE INDEX IF NOT EXISTS idx_buckets_last_accessed ON buckets (last_accessed DESC);
+CREATE INDEX IF NOT EXISTS idx_buckets_importance ON buckets (importance DESC);
+CREATE INDEX IF NOT EXISTS idx_buckets_user_id ON buckets (user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_buckets_document_id ON buckets (document_id) WHERE document_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_buckets_user_document ON buckets (user_id, document_id) WHERE user_id IS NOT NULL AND document_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_bucket_items_bucket_id ON bucket_items (bucket_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_embeddings_bucket_id ON embeddings (bucket_id);
+
+CREATE INDEX IF NOT EXISTS idx_relationships_source ON relationships (source_bucket);
+CREATE INDEX IF NOT EXISTS idx_relationships_target ON relationships (target_bucket);
+CREATE INDEX IF NOT EXISTS idx_relationships_type ON relationships (relation_type);
+CREATE INDEX IF NOT EXISTS idx_relationships_confidence ON relationships (confidence DESC);
+CREATE INDEX IF NOT EXISTS idx_relationships_user_id ON relationships (user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_relationships_source_bucket_id ON relationships (source_bucket_id) WHERE source_bucket_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_relationships_target_bucket_id ON relationships (target_bucket_id) WHERE target_bucket_id IS NOT NULL;
+ 
+
+CREATE INDEX IF NOT EXISTS idx_documents_uploaded_at ON documents (uploaded_at DESC);
+CREATE INDEX IF NOT EXISTS idx_documents_user_id ON documents (user_id) WHERE user_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_documents_s3_key ON documents (s3_key) WHERE s3_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents (content_hash) WHERE content_hash IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_user_content_hash ON documents (user_id, content_hash) WHERE user_id IS NOT NULL AND content_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_documents_user_uploaded_at ON documents (user_id, uploaded_at DESC) WHERE user_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders (user_id);
+CREATE INDEX IF NOT EXISTS idx_reminders_dismissed ON reminders (dismissed);
+CREATE INDEX IF NOT EXISTS idx_reminders_created_at ON reminders (created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_contradictions_user_id ON contradictions (user_id);
+CREATE INDEX IF NOT EXISTS idx_contradictions_resolved ON contradictions (resolved);
+
+CREATE INDEX IF NOT EXISTS idx_processing_jobs_user_status ON processing_jobs (user_id, status);
+CREATE INDEX IF NOT EXISTS idx_processing_jobs_started_at ON processing_jobs (started_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_document_links_user_source ON document_links (user_id, source_document_id, correlation_score DESC);
+CREATE INDEX IF NOT EXISTS idx_document_links_user_target ON document_links (user_id, target_document_id, correlation_score DESC);
+CREATE INDEX IF NOT EXISTS idx_document_links_updated_at ON document_links (updated_at DESC);
+
+CREATE VECTOR INDEX IF NOT EXISTS idx_embeddings_vector ON embeddings (vector);
 
 
 ================================================================================
@@ -2405,8 +1214,7 @@ export class RawStore {
       throw new Error(`Failed to fetch document content from S3: ${s3Key}`);
     }
   }
-
-  async getAllDocuments(): Promise<
+  async getAllDocuments(userId?: string | null): Promise<
     Array<{
       documentId: string;
       filename: string;
@@ -2415,11 +1223,23 @@ export class RawStore {
     }>
   > {
     try {
-      const rows = await queryMany<DocumentRow>(
-        `SELECT document_id, filename, file_type, uploaded_at
-         FROM documents
-         ORDER BY uploaded_at DESC`
-      );
+      const safeUserId =
+        typeof userId === "string" && /^[0-9a-f-]{36}$/i.test(userId)
+          ? userId
+          : null;
+      const rows = safeUserId
+        ? await queryMany<DocumentRow>(
+          `SELECT document_id, filename, file_type, uploaded_at
+FROM documents
+WHERE user_id = $1::uuid
+ORDER BY uploaded_at DESC`,
+          [safeUserId]
+        )
+        : await queryMany<DocumentRow>(
+          `SELECT document_id, filename, file_type, uploaded_at
+FROM documents
+ORDER BY uploaded_at DESC`
+        );
       return rows.map((row) => ({
         documentId: row.document_id,
         filename: row.filename,
@@ -2434,7 +1254,7 @@ export class RawStore {
     }
   }
 
-  
+
   async getStorageUsageFromDb(): Promise<{
     totalSizeBytes: number;
     objectCount: number;
@@ -2645,12 +1465,23 @@ export class RawStore {
       throw error;
     }
   }
-
-  async getTotalMessages(): Promise<number> {
+  async getTotalMessages(userId?: string | null): Promise<number> {
     try {
-      const row = await queryOne<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM messages"
-      );
+      const safeUserId =
+        typeof userId === "string" && /^[0-9a-f-]{36}$/i.test(userId)
+          ? userId
+          : null;
+      const row = safeUserId
+        ? await queryOne<{ count: number }>(
+          `SELECT COUNT(*)::int AS count
+FROM messages m
+JOIN sessions s ON s.session_id = m.session_id
+WHERE s.user_id = $1::uuid`,
+          [safeUserId]
+        )
+        : await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM messages"
+        );
       return row?.count ?? 0;
     } catch (error) {
       logger.error("getTotalMessages failed", {
@@ -2659,12 +1490,20 @@ export class RawStore {
       throw error;
     }
   }
-
-  async getTotalDocuments(): Promise<number> {
+  async getTotalDocuments(userId?: string | null): Promise<number> {
     try {
-      const row = await queryOne<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM documents"
-      );
+      const safeUserId =
+        typeof userId === "string" && /^[0-9a-f-]{36}$/i.test(userId)
+          ? userId
+          : null;
+      const row = safeUserId
+        ? await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM documents WHERE user_id = $1::uuid",
+          [safeUserId]
+        )
+        : await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM documents"
+        );
       return row?.count ?? 0;
     } catch (error) {
       logger.error("getTotalDocuments failed", {
@@ -2674,11 +1513,20 @@ export class RawStore {
     }
   }
 
-  async getTotalSessions(): Promise<number> {
+  async getTotalSessions(userId?: string | null): Promise<number> {
     try {
-      const row = await queryOne<{ count: number }>(
-        "SELECT COUNT(*)::int AS count FROM sessions"
-      );
+      const safeUserId =
+        typeof userId === "string" && /^[0-9a-f-]{36}$/i.test(userId)
+          ? userId
+          : null;
+      const row = safeUserId
+        ? await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM sessions WHERE user_id = $1::uuid",
+          [safeUserId]
+        )
+        : await queryOne<{ count: number }>(
+          "SELECT COUNT(*)::int AS count FROM sessions"
+        );
       return row?.count ?? 0;
     } catch (error) {
       logger.error("getTotalSessions failed", {

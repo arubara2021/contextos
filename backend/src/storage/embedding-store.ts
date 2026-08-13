@@ -516,57 +516,36 @@ export class EmbeddingStore {
     }
   }
 
-  async batchStoreEmbeddings(
-    entries: Array<{ bucketId: string; vector: number[] }>
-  ): Promise<number> {
-    if (entries.length === 0) {
+  async batchStoreEmbeddings(entries: Array<{ bucketId: string; vector: number[] }>): Promise<number> {
+    if (entries.length === 0) return 0;
+    const valid: Array<{ bucketId: string; serialized: string }> = [];
+    for (const e of entries) {
+      if (!isValidUuid(e.bucketId)) continue;
+      try {
+        this.validateVector(e.vector);
+        valid.push({ bucketId: e.bucketId, serialized: this.serializeVector(e.vector) });
+      } catch { /* skip invalid */ }
+    }
+    if (valid.length === 0) return 0;
+
+    try {
+      const params: unknown[] = [];
+      const clauses: string[] = [];
+      let idx = 1;
+      for (const e of valid) {
+        clauses.push(`($${idx++}::uuid, $${idx++}::vector)`);
+        params.push(e.bucketId, e.serialized);
+      }
+      await query(
+        `INSERT INTO embeddings (bucket_id, vector) VALUES ${clauses.join(", ")}
+       ON CONFLICT (bucket_id) DO UPDATE SET vector = EXCLUDED.vector, created_at = now()`,
+        params
+      );
+      return valid.length;
+    } catch (error) {
+      logger.error("batchStoreEmbeddings bulk failed", { error: (error as Error).message });
       return 0;
     }
-
-    const concurrency = Math.max(
-      1,
-      Math.min(8, Number(config.embedding.concurrency) || 8)
-    );
-
-    let stored = 0;
-
-    for (let i = 0; i < entries.length; i += concurrency) {
-      const batch = entries.slice(i, i + concurrency);
-
-      const results = await Promise.allSettled(
-        batch.map(async (entry) => {
-          if (!isValidUuid(entry.bucketId)) {
-            throw new Error("Invalid bucketId in batch embedding store");
-          }
-
-          this.validateVector(entry.vector);
-
-          const serialized = this.serializeVector(entry.vector);
-
-          await query(
-            `INSERT INTO embeddings (bucket_id, vector)
-             VALUES ($1::uuid, $2::vector)
-             ON CONFLICT (bucket_id)
-             DO UPDATE SET vector = EXCLUDED.vector, created_at = now()`,
-            [entry.bucketId, serialized]
-          );
-
-          return entry.bucketId;
-        })
-      );
-
-      for (const result of results) {
-        if (result.status === "fulfilled") {
-          stored++;
-        } else {
-          logger.debug("Batch store single entry failed", {
-            error: result.reason?.message,
-          });
-        }
-      }
-    }
-
-    return stored;
   }
 
   async initializeVectorIndex(): Promise<void> {

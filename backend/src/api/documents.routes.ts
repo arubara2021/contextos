@@ -14,6 +14,7 @@ import { parseDocument } from "../ingestion/parsers";
 import { query, queryOne, queryMany } from "../database";
 import type { FileFormat } from "../types/ingestion.types";
 import logger from "../utils/logger";
+import { waitUntil } from "@vercel/functions";
 
 const SANDBOX_MAX_UPLOADS = 3;
 

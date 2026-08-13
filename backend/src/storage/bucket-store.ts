@@ -324,13 +324,13 @@ export class BucketStore {
     try {
       const row = userId
         ? await queryOne<{ bucket_id: string }>(
-            "SELECT bucket_id FROM buckets WHERE normalized = $1 AND user_id = $2::uuid LIMIT 1",
-            [normalized, userId]
-          )
+          "SELECT bucket_id FROM buckets WHERE normalized = $1 AND user_id = $2::uuid LIMIT 1",
+          [normalized, userId]
+        )
         : await queryOne<{ bucket_id: string }>(
-            "SELECT bucket_id FROM buckets WHERE normalized = $1 AND user_id IS NULL LIMIT 1",
-            [normalized]
-          );
+          "SELECT bucket_id FROM buckets WHERE normalized = $1 AND user_id IS NULL LIMIT 1",
+          [normalized]
+        );
 
       return row?.bucket_id ?? null;
     } catch (error) {
@@ -621,141 +621,90 @@ export class BucketStore {
   }
 
   async bulkUpsertBuckets(
-    entries: Array<{
-      label: string;
-      definition: string;
-      conceptType: string;
-      importance: number;
-      source: string;
-      documentId?: string | null;
-      userId?: string | null;
-    }>
+    entries: Array<{ label: string; definition: string; conceptType: string; importance: number; source: string; documentId?: string | null; userId?: string | null; }>
   ): Promise<{ newBuckets: number; mergedBuckets: number; bucketIds: string[] }> {
-    if (entries.length === 0) {
-      return { newBuckets: 0, mergedBuckets: 0, bucketIds: [] };
+    if (entries.length === 0) return { newBuckets: 0, mergedBuckets: 0, bucketIds: [] };
+
+    const normalizedEntries = entries.map((e) => ({ ...e, normalized: normalizeKey(e.label), userId: this.safeUserId(e.userId), documentId: this.safeDocumentId(e.documentId) }));
+    const resolvedUserIds = await this.resolveUserIdsForEntries(entries);
+    for (const e of normalizedEntries) {
+      if (!e.userId && e.documentId) e.userId = resolvedUserIds.get(e.documentId) ?? null;
     }
 
-    let newBuckets = 0;
-    let mergedBuckets = 0;
-    const bucketIds: string[] = [];
-
-    const resolvedUserIds = await this.resolveUserIdsForEntries(entries);
     const { getDecayRate } = await import("../memory/decay");
-    const retainWeight = Number(config.decay.retainWeight ?? 0.7);
-    const accessBoostWeight = Number(config.decay.accessBoostWeight ?? 0.3);
+    let newBuckets = 0, mergedBuckets = 0;
+    const bucketIds: string[] = [];
 
     try {
       await withTransaction(async (client) => {
-        for (const entry of entries) {
-          const normalized = normalizeKey(entry.label);
+        const normalizedKeys = Array.from(new Set(normalizedEntries.map((e) => e.normalized)));
+        const existingRows = await client.query<{ bucket_id: string; normalized: string; user_id: string | null }>(
+          `SELECT bucket_id, normalized, user_id FROM buckets WHERE normalized = ANY($1::text[])`, [normalizedKeys]
+        );
+        const existingMap = new Map<string, string>();
+        for (const row of existingRows.rows) existingMap.set(`${row.user_id ?? "null"}|${row.normalized}`, row.bucket_id);
 
-          const userId =
-            this.safeUserId(entry.userId) ??
-            (entry.documentId
-              ? resolvedUserIds.get(entry.documentId) ?? null
-              : null);
+        const toCreate: typeof normalizedEntries = [];
+        const toMerge: Array<typeof normalizedEntries[0] & { bucketId: string }> = [];
+        for (const e of normalizedEntries) {
+          const k = `${e.userId ?? "null"}|${e.normalized}`;
+          const existingId = existingMap.get(k);
+          if (existingId) toMerge.push({ ...e, bucketId: existingId });
+          else toCreate.push(e);
+        }
 
-          const documentId = this.safeDocumentId(entry.documentId);
-
-          const existing = userId
-            ? await client.query(
-                "SELECT bucket_id FROM buckets WHERE normalized = $1 AND user_id = $2::uuid LIMIT 1",
-                [normalized, userId]
-              )
-            : await client.query(
-                "SELECT bucket_id FROM buckets WHERE normalized = $1 AND user_id IS NULL LIMIT 1",
-                [normalized]
-              );
-
-          if (existing.rows.length > 0) {
-            const bucketId = existing.rows[0].bucket_id as string;
-
-            await client.query(
-              `INSERT INTO bucket_items (bucket_id, label, definition, source)
-               VALUES ($1, $2, $3, $4)`,
-              [bucketId, entry.label, entry.definition ?? null, entry.source ?? null]
-            );
-
-            if (userId) {
-              await client.query(
-                `UPDATE buckets
-                 SET importance = GREATEST(importance, $1),
-                     strength = LEAST(1.0, strength * $2 + 1.0 * $3),
-                     last_accessed = now(),
-                     access_count = access_count + 1
-                 WHERE bucket_id = $4::uuid AND user_id = $5::uuid`,
-                [
-                  entry.importance,
-                  retainWeight,
-                  accessBoostWeight,
-                  bucketId,
-                  userId,
-                ]
-              );
-            } else {
-              await client.query(
-                `UPDATE buckets
-                 SET importance = GREATEST(importance, $1),
-                     strength = LEAST(1.0, strength * $2 + 1.0 * $3),
-                     last_accessed = now(),
-                     access_count = access_count + 1
-                 WHERE bucket_id = $4::uuid AND user_id IS NULL`,
-                [entry.importance, retainWeight, accessBoostWeight, bucketId]
-              );
-            }
-
-            mergedBuckets++;
-            bucketIds.push(bucketId);
-          } else {
-            const decayRate = getDecayRate(entry.importance);
-
-            const result = await client.query(
-              `INSERT INTO buckets (canonical, normalized, strength, importance, concept_type, decay_rate, document_id, user_id)
-               VALUES ($1, $2, 0.5, $3, $4, $5, $6::uuid, $7::uuid)
-               RETURNING bucket_id`,
-              [
-                entry.label,
-                normalized,
-                entry.importance,
-                entry.conceptType,
-                decayRate,
-                documentId,
-                userId,
-              ]
-            );
-
-            const bucketId = result.rows[0]?.bucket_id as string;
-
-            await client.query(
-              `INSERT INTO bucket_items (bucket_id, label, definition, source)
-               VALUES ($1, $2, $3, $4)`,
-              [bucketId, entry.label, entry.definition ?? null, entry.source ?? null]
-            );
-
-            newBuckets++;
-            bucketIds.push(bucketId);
+        const createdIds = new Map<string, string>();
+        if (toCreate.length > 0) {
+          const params: unknown[] = []; const clauses: string[] = []; let idx = 1;
+          for (const e of toCreate) {
+            clauses.push(`($${idx++}, $${idx++}, 0.5, $${idx++}, $${idx++}, $${idx++}, $${idx++}::uuid, $${idx++}::uuid)`);
+            params.push(e.label, e.normalized, e.importance, e.conceptType, getDecayRate(e.importance), e.documentId, e.userId);
           }
+          const insertRes = await client.query<{ bucket_id: string; normalized: string; user_id: string | null }>(
+            `INSERT INTO buckets (canonical, normalized, strength, importance, concept_type, decay_rate, document_id, user_id)
+           VALUES ${clauses.join(", ")} RETURNING bucket_id, normalized, user_id`, params
+          );
+          for (const row of insertRes.rows) createdIds.set(`${row.user_id ?? "null"}|${row.normalized}`, row.bucket_id);
+        }
+
+        for (const e of normalizedEntries) {
+          const k = `${e.userId ?? "null"}|${e.normalized}`;
+          const id = createdIds.get(k) ?? existingMap.get(k);
+          if (id) { bucketIds.push(id); if (createdIds.has(k)) newBuckets++; else mergedBuckets++; }
+        }
+
+        if (bucketIds.length > 0) {
+          const itemParams: unknown[] = []; const itemClauses: string[] = []; let idx = 1;
+          for (let i = 0; i < normalizedEntries.length; i++) {
+            const id = bucketIds[i]; if (!id) continue; const e = normalizedEntries[i];
+            itemClauses.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+            itemParams.push(id, e.label, e.definition ?? null, e.source ?? null);
+          }
+          if (itemClauses.length > 0) {
+            await client.query(`INSERT INTO bucket_items (bucket_id, label, definition, source) VALUES ${itemClauses.join(", ")}`, itemParams);
+          }
+        }
+
+        if (toMerge.length > 0) {
+          const retainWeight = Number(config.decay.retainWeight ?? 0.7);
+          const accessBoostWeight = Number(config.decay.accessBoostWeight ?? 0.3);
+          const updateParams: unknown[] = [retainWeight, accessBoostWeight];
+          const valueClauses: string[] = []; let idx = 3;
+          for (const e of toMerge) {
+            valueClauses.push(`($${idx++}::uuid, $${idx++}::float8)`);
+            updateParams.push(e.bucketId, e.importance);
+          }
+          await client.query(
+            `UPDATE buckets AS b SET importance = GREATEST(b.importance, v.imp), strength = LEAST(1.0, b.strength * $1 + 1.0 * $2), last_accessed = now(), access_count = b.access_count + 1
+           FROM (VALUES ${valueClauses.join(", ")}) AS v(id, imp) WHERE b.bucket_id = v.id`, updateParams
+          );
         }
       });
     } catch (error) {
       const msg = (error as Error).message || "";
-
-      if (
-        /duplicate|unique|idx_buckets_user_normalized|idx_buckets_null_normalized/i.test(
-          msg
-        )
-      ) {
-        return this.bulkUpsertFallback(entries, resolvedUserIds);
-      }
-
-      logger.error("bulkUpsertBuckets failed", {
-        entryCount: entries.length,
-        error: msg,
-      });
-
-      throw error;
+      if (/duplicate|unique/i.test(msg)) return this.bulkUpsertFallback(entries, resolvedUserIds);
+      logger.error("bulkUpsertBuckets failed", { error: msg }); throw error;
     }
-
     return { newBuckets, mergedBuckets, bucketIds };
   }
 
@@ -810,13 +759,13 @@ export class BucketStore {
     try {
       const bucketRow = userId
         ? await queryOne<BucketRow>(
-            "SELECT * FROM buckets WHERE bucket_id = $1::uuid AND user_id = $2::uuid",
-            [bucketId, userId]
-          )
+          "SELECT * FROM buckets WHERE bucket_id = $1::uuid AND user_id = $2::uuid",
+          [bucketId, userId]
+        )
         : await queryOne<BucketRow>(
-            "SELECT * FROM buckets WHERE bucket_id = $1::uuid",
-            [bucketId]
-          );
+          "SELECT * FROM buckets WHERE bucket_id = $1::uuid",
+          [bucketId]
+        );
 
       if (!bucketRow) {
         return null;
@@ -942,8 +891,7 @@ export class BucketStore {
 
     try {
       await query(
-        `UPDATE buckets SET ${clauses} WHERE bucket_id = $${
-          values.length + 1
+        `UPDATE buckets SET ${clauses} WHERE bucket_id = $${values.length + 1
         }::uuid`,
         [...values, bucketId]
       );
@@ -1115,13 +1063,13 @@ export class BucketStore {
     try {
       const rows = userId
         ? await queryMany<BucketRow>(
-            "SELECT * FROM buckets WHERE user_id = $1::uuid ORDER BY last_accessed DESC LIMIT $2",
-            [userId, limit]
-          )
+          "SELECT * FROM buckets WHERE user_id = $1::uuid ORDER BY last_accessed DESC LIMIT $2",
+          [userId, limit]
+        )
         : await queryMany<BucketRow>(
-            "SELECT * FROM buckets ORDER BY last_accessed DESC LIMIT $1",
-            [limit]
-          );
+          "SELECT * FROM buckets ORDER BY last_accessed DESC LIMIT $1",
+          [limit]
+        );
 
       return rows.map(mapRowToBucket);
     } catch (error) {
@@ -1147,7 +1095,7 @@ export class BucketStore {
 
       const rows = userId
         ? await queryMany<BucketRow>(
-            `SELECT b.*
+          `SELECT b.*
              FROM buckets b
              WHERE (
                b.canonical ILIKE $1
@@ -1159,10 +1107,10 @@ export class BucketStore {
              ) AND b.user_id = $2::uuid
              ORDER BY b.strength DESC
              LIMIT $3`,
-            [term, userId, limit]
-          )
+          [term, userId, limit]
+        )
         : await queryMany<BucketRow>(
-            `SELECT b.*
+          `SELECT b.*
              FROM buckets b
              WHERE (
                b.canonical ILIKE $1
@@ -1174,8 +1122,8 @@ export class BucketStore {
              )
              ORDER BY b.strength DESC
              LIMIT $2`,
-            [term, limit]
-          );
+          [term, limit]
+        );
 
       return rows.map(mapRowToBucket);
     } catch (error) {
@@ -1211,31 +1159,31 @@ export class BucketStore {
     try {
       const rows = userId
         ? await queryMany<{
-            bucket_id: string;
-            canonical: string;
-            concept_type: string;
-            importance: number;
-            strength: number;
-          }>(
-            `SELECT bucket_id, canonical, concept_type, importance, strength
+          bucket_id: string;
+          canonical: string;
+          concept_type: string;
+          importance: number;
+          strength: number;
+        }>(
+          `SELECT bucket_id, canonical, concept_type, importance, strength
              FROM buckets
              WHERE document_id = $1::uuid AND user_id = $2::uuid
              ORDER BY importance DESC, strength DESC, canonical ASC`,
-            [documentId, userId]
-          )
+          [documentId, userId]
+        )
         : await queryMany<{
-            bucket_id: string;
-            canonical: string;
-            concept_type: string;
-            importance: number;
-            strength: number;
-          }>(
-            `SELECT bucket_id, canonical, concept_type, importance, strength
+          bucket_id: string;
+          canonical: string;
+          concept_type: string;
+          importance: number;
+          strength: number;
+        }>(
+          `SELECT bucket_id, canonical, concept_type, importance, strength
              FROM buckets
              WHERE document_id = $1::uuid
              ORDER BY importance DESC, strength DESC, canonical ASC`,
-            [documentId]
-          );
+          [documentId]
+        );
 
       return rows.map((r) => ({
         bucketId: r.bucket_id,
