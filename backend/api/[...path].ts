@@ -1,6 +1,6 @@
 import app from "../src/app";
 import { initializeDependencies } from "../src/api/dependencies";
-import { initDatabase } from "../src/database";
+import { initPool, initDatabase } from "../src/database";
 
 let initialized = false;
 let initError: string | null = null;
@@ -9,6 +9,7 @@ async function ensureReady() {
     if (initialized) return;
     if (initError) throw new Error(initError);
     try {
+        initPool();
         await initDatabase();
         initializeDependencies();
         initialized = true;
