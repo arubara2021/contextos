@@ -240,6 +240,12 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
       }
     }
 
+    // If the user profile returns 404, the user was deleted from the DB (e.g. DB wipe or sandbox expired)
+    if (response.status === 404 && auth && path.includes("/users/me")) {
+      clearToken();
+      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+    }
+
     const text = await response.text();
     let data: unknown = null;
     if (text) {

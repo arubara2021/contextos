@@ -119,8 +119,9 @@ export function useAuth() {
         // If it's a network timeout, Vercel cold start, or 500 error, keep the token 
         // so the user isn't forcefully logged out when clicking the back button.
         const is401 = err instanceof ApiError && err.status === 401;
+        const isUserDeleted = err instanceof ApiError && err.status === 404;
 
-        if (is401) {
+        if (is401 || isUserDeleted) {
           clearToken();
           setState({
             user: null,
