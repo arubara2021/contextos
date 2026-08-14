@@ -1,4 +1,40 @@
-import { task } from "@trigger.dev/sdk/v3";
+const fs = require('fs');
+const path = require('path');
+
+console.log('🔧 Applying ContextOS fixes...\n');
+
+// === FIX 1: vercel.json with sin1 region ===
+const vercelJson = `{
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api"
+    }
+  ],
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 60
+    }
+  },
+  "regions": ["sin1"],
+  "crons": [
+    {
+      "path": "/api/cron/sandbox-sweep",
+      "schedule": "0 * * * *"
+    }
+  ]
+}
+`;
+fs.writeFileSync('vercel.json', vercelJson);
+console.log('✅ vercel.json: added sin1 region');
+
+// === FIX 2: Create the Trigger.dev task file ===
+const tasksDir = path.join('src', 'tasks');
+if (!fs.existsSync(tasksDir)) {
+  fs.mkdirSync(tasksDir, { recursive: true });
+}
+
+const taskFile = `import { task } from "@trigger.dev/sdk/v3";
 import { initPool, closePool, query, queryOne } from "../database";
 import { initializeDependencies, getDependencies } from "../api/dependencies";
 import { parseDocument } from "../ingestion/parsers";
@@ -76,12 +112,12 @@ async function updateJob(jobId: string, patch: any): Promise<void> {
   for (const [k, v] of Object.entries(patch)) {
     if (v === undefined) continue;
     const col = k.replace(/([A-Z])/g, "_$1").toLowerCase();
-    fields.push(`${col} = ${idx++}`);
+    fields.push(\`\${col} = $\{idx++}\`);
     values.push(v);
   }
   if (fields.length === 0) return;
   values.push(jobId);
-  await query(`UPDATE processing_jobs SET ${fields.join(", ")} WHERE job_id = ${idx}::uuid`, values);
+  await query(\`UPDATE processing_jobs SET \${fields.join(", ")} WHERE job_id = $\{idx}::uuid\`, values);
 }
 
 export const processDocumentTask = task({
@@ -98,8 +134,8 @@ export const processDocumentTask = task({
         filename: string; file_type: string; format: string;
         mime_type: string | null; size_bytes: string | number; s3_key: string | null;
       }>(
-        `SELECT filename, file_type, format, mime_type, size_bytes, s3_key
-         FROM processing_jobs WHERE job_id = $1::uuid AND user_id = $2::uuid`,
+        \`SELECT filename, file_type, format, mime_type, size_bytes, s3_key
+         FROM processing_jobs WHERE job_id = $1::uuid AND user_id = $2::uuid\`,
         [jobId, userId]
       );
 
@@ -110,7 +146,7 @@ export const processDocumentTask = task({
       if (locator.startsWith("dbupload:")) {
         const fileId = locator.slice("dbupload:".length);
         const uploadRow = await queryOne<{ content_base64: string }>(
-          `SELECT content_base64 FROM uploaded_files WHERE file_id = $1::uuid AND user_id = $2::uuid`,
+          \`SELECT content_base64 FROM uploaded_files WHERE file_id = $1::uuid AND user_id = $2::uuid\`,
           [fileId, userId]
         );
         if (!uploadRow) throw new Error("Uploaded file not found in DB");
@@ -128,7 +164,7 @@ export const processDocumentTask = task({
 
       const contentHash = createHash("sha256").update(content, "utf8").digest("hex");
       const existing = await queryOne<{ document_id: string }>(
-        `SELECT document_id FROM documents WHERE user_id = $1::uuid AND content_hash = $2 LIMIT 1`,
+        \`SELECT document_id FROM documents WHERE user_id = $1::uuid AND content_hash = $2 LIMIT 1\`,
         [userId, contentHash]
       );
       if (existing) {
@@ -144,8 +180,8 @@ export const processDocumentTask = task({
       }
 
       const doc = await queryOne<{ document_id: string }>(
-        `INSERT INTO documents (filename, file_type, content, content_hash, s3_key, user_id)
-         VALUES ($1, $2, $3, $4, NULL, $5::uuid) RETURNING document_id`,
+        \`INSERT INTO documents (filename, file_type, content, content_hash, s3_key, user_id)
+         VALUES ($1, $2, $3, $4, NULL, $5::uuid) RETURNING document_id\`,
         [jobRow.filename, jobRow.file_type, content, contentHash, userId]
       );
       if (!doc) throw new Error("Failed to create document record");
@@ -181,7 +217,7 @@ export const processDocumentTask = task({
 
       await updateJob(jobId, {
         fileId: doc.document_id, status: "complete", stage: "complete", progress: 100,
-        message: `${ingestionResult.conceptsExtracted} concepts extracted, ${ingestionResult.newBuckets} new memories`,
+        message: \`\${ingestionResult.conceptsExtracted} concepts extracted, \${ingestionResult.newBuckets} new memories\`,
         completedAt: new Date(),
         result: {
           fileId: doc.document_id, filename: jobRow.filename, fieldType: "other", domain: "general", status: "complete",
@@ -203,7 +239,7 @@ export const processDocumentTask = task({
       logger.error("Trigger.dev worker failed", { jobId, error: message });
       await updateJob(jobId, {
         status: "failed", stage: "failed", progress: 100,
-        message: `Failed: ${message}`, error: message, completedAt: new Date(),
+        message: \`Failed: \${message}\`, error: message, completedAt: new Date(),
       }).catch(() => {});
       throw error;
     } finally {
@@ -215,11 +251,95 @@ export const processDocumentTask = task({
 async function cleanup(jobId: string) {
   try {
     const row = await queryOne<{ s3_key: string | null }>(
-      `SELECT s3_key FROM processing_jobs WHERE job_id = $1::uuid`, [jobId]
+      \`SELECT s3_key FROM processing_jobs WHERE job_id = $1::uuid\`, [jobId]
     );
     if (row?.s3_key?.startsWith("dbupload:")) {
       const fileId = row.s3_key.slice("dbupload:".length);
-      await query(`DELETE FROM uploaded_files WHERE file_id = $1::uuid`, [fileId]).catch(() => {});
+      await query(\`DELETE FROM uploaded_files WHERE file_id = $1::uuid\`, [fileId]).catch(() => {});
     }
   } catch {}
 }
+`;
+
+fs.writeFileSync(path.join(tasksDir, 'document-processing.task.ts'), taskFile);
+console.log('✅ Created src/tasks/document-processing.task.ts');
+
+// === FIX 3: Fix documents.routes.ts to use Trigger.dev ===
+// We read the current file and patch the upload handler
+let routesFile = fs.readFileSync(path.join('src', 'api', 'documents.routes.ts'), 'utf8');
+
+// Remove the old QStash trigger block and replace with Trigger.dev
+const oldBlock = `let processingMode = "local";
+if (queueConfigured()) {
+  try {
+    await enqueueDocumentProcessing(jobId, req.userId);
+    processingMode = "queue";
+  } catch (queueError) {
+    logger.error("QStash enqueue failed, falling back to local processing", {
+      jobId,
+      error: (queueError as Error).message,
+    });
+  }
+}
+if (processingMode === "local") {
+  const work = processDocumentAsync(
+    jobId,
+    req.userId,
+    file.originalname,
+    fileType,
+    format,
+    mimeType,
+    file.size,
+    file.buffer
+  ).catch((err) => {
+    logger.error("Background processing unhandled error", {
+      jobId,
+      error: (err as Error).message,
+    });
+  });
+  try {
+    const { waitUntil } = await import("@vercel/functions");
+    waitUntil(work);
+  } catch {
+    void work;
+  }
+}`;
+
+const newBlock = `// --- TRIGGER.DEV BACKGROUND PROCESSING ---
+let triggerSucceeded = false;
+try {
+  const { processDocumentTask } = await import("../tasks/document-processing.task");
+  await processDocumentTask.trigger({ jobId, userId: req.userId });
+  logger.info("Triggered Trigger.dev task", { jobId });
+  triggerSucceeded = true;
+} catch (triggerError) {
+  logger.error("Trigger.dev enqueue failed, falling back to local processing", {
+    jobId,
+    error: (triggerError as Error).message,
+  });
+}
+if (!triggerSucceeded) {
+  const work = processDocumentAsync(
+    jobId, req.userId, file.originalname, fileType, format,
+    mimeType, file.size, file.buffer
+  ).catch((err) => {
+    logger.error("Background processing unhandled error", { jobId, error: (err as Error).message });
+  });
+  try {
+    const { waitUntil } = await import("@vercel/functions");
+    waitUntil(work);
+  } catch { void work; }
+}`;
+
+if (routesFile.includes(oldBlock)) {
+  routesFile = routesFile.replace(oldBlock, newBlock);
+  fs.writeFileSync(path.join('src', 'api', 'documents.routes.ts'), routesFile);
+  console.log('✅ documents.routes.ts: patched with Trigger.dev trigger');
+} else {
+  console.log('⚠️  documents.routes.ts: could not find QStash block to replace (may already be patched)');
+}
+
+console.log('\\n🎉 All fixes applied! Now run:');
+console.log('   git add .');
+console.log('   git commit -m "feat: trigger.dev integration + sin1 region"');
+console.log('   git push');
