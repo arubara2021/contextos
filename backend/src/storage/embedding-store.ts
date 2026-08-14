@@ -518,6 +518,7 @@ export class EmbeddingStore {
 
   async batchStoreEmbeddings(entries: Array<{ bucketId: string; vector: number[] }>): Promise<number> {
     if (entries.length === 0) return 0;
+
     const valid: Array<{ bucketId: string; serialized: string }> = [];
     for (const e of entries) {
       if (!isValidUuid(e.bucketId)) continue;

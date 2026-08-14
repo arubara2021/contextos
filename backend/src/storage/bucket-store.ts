@@ -621,90 +621,151 @@ export class BucketStore {
   }
 
   async bulkUpsertBuckets(
-    entries: Array<{ label: string; definition: string; conceptType: string; importance: number; source: string; documentId?: string | null; userId?: string | null; }>
+    entries: Array<{
+      label: string;
+      definition: string;
+      conceptType: string;
+      importance: number;
+      source: string;
+      documentId?: string | null;
+      userId?: string | null;
+    }>
   ): Promise<{ newBuckets: number; mergedBuckets: number; bucketIds: string[] }> {
     if (entries.length === 0) return { newBuckets: 0, mergedBuckets: 0, bucketIds: [] };
 
-    const normalizedEntries = entries.map((e) => ({ ...e, normalized: normalizeKey(e.label), userId: this.safeUserId(e.userId), documentId: this.safeDocumentId(e.documentId) }));
+    const normalizedEntries = entries.map((e) => ({
+      ...e,
+      normalized: normalizeKey(e.label),
+      userId: this.safeUserId(e.userId),
+      documentId: this.safeDocumentId(e.documentId),
+    }));
+
     const resolvedUserIds = await this.resolveUserIdsForEntries(entries);
     for (const e of normalizedEntries) {
-      if (!e.userId && e.documentId) e.userId = resolvedUserIds.get(e.documentId) ?? null;
+      if (!e.userId && e.documentId) {
+        e.userId = resolvedUserIds.get(e.documentId) ?? null;
+      }
     }
 
     const { getDecayRate } = await import("../memory/decay");
-    let newBuckets = 0, mergedBuckets = 0;
+    const retainWeight = Number(config.decay.retainWeight ?? 0.7);
+    const accessBoostWeight = Number(config.decay.accessBoostWeight ?? 0.3);
+
+    let newBuckets = 0;
+    let mergedBuckets = 0;
     const bucketIds: string[] = [];
 
     try {
       await withTransaction(async (client) => {
         const normalizedKeys = Array.from(new Set(normalizedEntries.map((e) => e.normalized)));
-        const existingRows = await client.query<{ bucket_id: string; normalized: string; user_id: string | null }>(
-          `SELECT bucket_id, normalized, user_id FROM buckets WHERE normalized = ANY($1::text[])`, [normalizedKeys]
-        );
+        const userIds = Array.from(new Set(normalizedEntries.map((e) => e.userId).filter((u): u is string => !!u)));
+
+        const existingRows = userIds.length > 0
+          ? await client.query<{ bucket_id: string; normalized: string; user_id: string | null }>(
+            `SELECT bucket_id, normalized, user_id FROM buckets WHERE normalized = ANY($1::text[]) AND (user_id = ANY($2::uuid[]) OR user_id IS NULL)`,
+            [normalizedKeys, userIds]
+          )
+          : await client.query<{ bucket_id: string; normalized: string; user_id: string | null }>(
+            `SELECT bucket_id, normalized, user_id FROM buckets WHERE normalized = ANY($1::text[])`,
+            [normalizedKeys]
+          );
+
         const existingMap = new Map<string, string>();
-        for (const row of existingRows.rows) existingMap.set(`${row.user_id ?? "null"}|${row.normalized}`, row.bucket_id);
+        for (const row of existingRows.rows) {
+          existingMap.set(`${row.user_id ?? "null"}|${row.normalized}`, row.bucket_id);
+        }
 
         const toCreate: typeof normalizedEntries = [];
         const toMerge: Array<typeof normalizedEntries[0] & { bucketId: string }> = [];
+
         for (const e of normalizedEntries) {
           const k = `${e.userId ?? "null"}|${e.normalized}`;
           const existingId = existingMap.get(k);
-          if (existingId) toMerge.push({ ...e, bucketId: existingId });
-          else toCreate.push(e);
+          if (existingId) {
+            toMerge.push({ ...e, bucketId: existingId });
+          } else {
+            toCreate.push(e);
+          }
         }
 
         const createdIds = new Map<string, string>();
         if (toCreate.length > 0) {
-          const params: unknown[] = []; const clauses: string[] = []; let idx = 1;
+          const params: unknown[] = [];
+          const clauses: string[] = [];
+          let idx = 1;
           for (const e of toCreate) {
             clauses.push(`($${idx++}, $${idx++}, 0.5, $${idx++}, $${idx++}, $${idx++}, $${idx++}::uuid, $${idx++}::uuid)`);
             params.push(e.label, e.normalized, e.importance, e.conceptType, getDecayRate(e.importance), e.documentId, e.userId);
           }
           const insertRes = await client.query<{ bucket_id: string; normalized: string; user_id: string | null }>(
             `INSERT INTO buckets (canonical, normalized, strength, importance, concept_type, decay_rate, document_id, user_id)
-           VALUES ${clauses.join(", ")} RETURNING bucket_id, normalized, user_id`, params
+           VALUES ${clauses.join(", ")}
+           RETURNING bucket_id, normalized, user_id`,
+            params
           );
-          for (const row of insertRes.rows) createdIds.set(`${row.user_id ?? "null"}|${row.normalized}`, row.bucket_id);
+          for (const row of insertRes.rows) {
+            createdIds.set(`${row.user_id ?? "null"}|${row.normalized}`, row.bucket_id);
+          }
         }
 
         for (const e of normalizedEntries) {
           const k = `${e.userId ?? "null"}|${e.normalized}`;
           const id = createdIds.get(k) ?? existingMap.get(k);
-          if (id) { bucketIds.push(id); if (createdIds.has(k)) newBuckets++; else mergedBuckets++; }
+          if (id) {
+            bucketIds.push(id);
+            if (createdIds.has(k)) newBuckets++;
+            else mergedBuckets++;
+          }
         }
 
         if (bucketIds.length > 0) {
-          const itemParams: unknown[] = []; const itemClauses: string[] = []; let idx = 1;
+          const itemParams: unknown[] = [];
+          const itemClauses: string[] = [];
+          let idx = 1;
           for (let i = 0; i < normalizedEntries.length; i++) {
-            const id = bucketIds[i]; if (!id) continue; const e = normalizedEntries[i];
+            const id = bucketIds[i];
+            if (!id) continue;
+            const e = normalizedEntries[i];
             itemClauses.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++})`);
             itemParams.push(id, e.label, e.definition ?? null, e.source ?? null);
           }
           if (itemClauses.length > 0) {
-            await client.query(`INSERT INTO bucket_items (bucket_id, label, definition, source) VALUES ${itemClauses.join(", ")}`, itemParams);
+            await client.query(
+              `INSERT INTO bucket_items (bucket_id, label, definition, source) VALUES ${itemClauses.join(", ")}`,
+              itemParams
+            );
           }
         }
 
         if (toMerge.length > 0) {
-          const retainWeight = Number(config.decay.retainWeight ?? 0.7);
-          const accessBoostWeight = Number(config.decay.accessBoostWeight ?? 0.3);
           const updateParams: unknown[] = [retainWeight, accessBoostWeight];
-          const valueClauses: string[] = []; let idx = 3;
+          const valueClauses: string[] = [];
+          let idx = 3;
           for (const e of toMerge) {
             valueClauses.push(`($${idx++}::uuid, $${idx++}::float8)`);
             updateParams.push(e.bucketId, e.importance);
           }
           await client.query(
-            `UPDATE buckets AS b SET importance = GREATEST(b.importance, v.imp), strength = LEAST(1.0, b.strength * $1 + 1.0 * $2), last_accessed = now(), access_count = b.access_count + 1
-           FROM (VALUES ${valueClauses.join(", ")}) AS v(id, imp) WHERE b.bucket_id = v.id`, updateParams
+            `UPDATE buckets AS b SET
+             importance = GREATEST(b.importance, v.imp),
+             strength = LEAST(1.0, b.strength * $1 + 1.0 * $2),
+             last_accessed = now(),
+             access_count = b.access_count + 1
+           FROM (VALUES ${valueClauses.join(", ")}) AS v(id, imp)
+           WHERE b.bucket_id = v.id`,
+            updateParams
           );
         }
       });
     } catch (error) {
       const msg = (error as Error).message || "";
-      if (/duplicate|unique/i.test(msg)) return this.bulkUpsertFallback(entries, resolvedUserIds);
-      logger.error("bulkUpsertBuckets failed", { error: msg }); throw error;
+      if (/duplicate|unique/i.test(msg)) {
+        return this.bulkUpsertFallback(entries, resolvedUserIds);
+      }
+      logger.error("bulkUpsertBuckets failed", { error: msg });
+      throw error;
     }
+
     return { newBuckets, mergedBuckets, bucketIds };
   }
 

@@ -503,21 +503,40 @@ export class RelationshipStore {
 
   async syncFromConcepts(input: SyncFromConceptsInput): Promise<number> {
     if (!input.edges || input.edges.length === 0) return 0;
+
     const seen = new Set<string>();
-    const validEdges: Array<{ sourceBucketId: string; targetBucketId: string; sourceLabel: string; targetLabel: string; relationType: RelationshipType; confidence: number; sourceText: string | null; userId: string | null; documentId: string | null; metadataJson: string | null; }> = [];
+    const validEdges: Array<{
+      sourceBucketId: string;
+      targetBucketId: string;
+      sourceLabel: string;
+      targetLabel: string;
+      relationType: RelationshipType;
+      confidence: number;
+      sourceText: string | null;
+      userId: string | null;
+      documentId: string | null;
+      metadataJson: string | null;
+    }> = [];
 
     for (const edge of input.edges) {
       let sourceBucketId = edge.sourceBucketId ?? null;
       let targetBucketId = edge.targetBucketId ?? null;
       if (sourceBucketId && !isValidUuid(sourceBucketId)) sourceBucketId = null;
       if (targetBucketId && !isValidUuid(targetBucketId)) targetBucketId = null;
-      if (!sourceBucketId && edge.sourceLabel) sourceBucketId = await this.resolveBucketIdByCanonical(edge.sourceLabel, input.userId, input.documentId);
-      if (!targetBucketId && edge.targetLabel) targetBucketId = await this.resolveBucketIdByCanonical(edge.targetLabel, input.userId, input.documentId);
+
+      if (!sourceBucketId && edge.sourceLabel) {
+        sourceBucketId = await this.resolveBucketIdByCanonical(edge.sourceLabel, input.userId, input.documentId);
+      }
+      if (!targetBucketId && edge.targetLabel) {
+        targetBucketId = await this.resolveBucketIdByCanonical(edge.targetLabel, input.userId, input.documentId);
+      }
       if (!sourceBucketId || !targetBucketId || sourceBucketId === targetBucketId) continue;
 
       let userId = input.userId ?? null;
       if (userId && !isValidUuid(userId)) userId = null;
-      if (!userId) userId = (await this.resolveBucketUserId(sourceBucketId)) ?? (await this.resolveBucketUserId(targetBucketId));
+      if (!userId) {
+        userId = (await this.resolveBucketUserId(sourceBucketId)) ?? (await this.resolveBucketUserId(targetBucketId));
+      }
 
       const sourceCanonical = edge.sourceLabel || (await this.resolveCanonical(sourceBucketId));
       const targetCanonical = edge.targetLabel || (await this.resolveCanonical(targetBucketId));
@@ -528,8 +547,25 @@ export class RelationshipStore {
       if (seen.has(key)) continue;
       seen.add(key);
 
-      const metadata: RelationshipMetadata = { method: "extraction", sourceDocumentId: input.documentId ?? null, evidence: edge.sourceText ?? undefined, updatedAt: new Date().toISOString() };
-      validEdges.push({ sourceBucketId, targetBucketId, sourceLabel: sourceCanonical, targetLabel: targetCanonical, relationType, confidence: validateConfidence(edge.confidence ?? 0.65), sourceText: edge.sourceText ?? null, userId, documentId: input.documentId ?? null, metadataJson: JSON.stringify(metadata) });
+      const metadata: RelationshipMetadata = {
+        method: "extraction",
+        sourceDocumentId: input.documentId ?? null,
+        evidence: edge.sourceText ?? undefined,
+        updatedAt: new Date().toISOString(),
+      };
+
+      validEdges.push({
+        sourceBucketId,
+        targetBucketId,
+        sourceLabel: sourceCanonical,
+        targetLabel: targetCanonical,
+        relationType,
+        confidence: validateConfidence(edge.confidence ?? 0.65),
+        sourceText: edge.sourceText ?? null,
+        userId,
+        documentId: input.documentId ?? null,
+        metadataJson: JSON.stringify(metadata),
+      });
     }
 
     if (validEdges.length === 0) return 0;
@@ -544,8 +580,10 @@ export class RelationshipStore {
           params.push(e.sourceLabel, e.targetLabel, e.relationType, e.confidence, e.sourceText, e.sourceBucketId, e.targetBucketId, e.userId, e.metadataJson);
         }
         await client.query(
-          `INSERT INTO relationships (source_bucket, target_bucket, relation_type, confidence, source_text, source_bucket_id, target_bucket_id, user_id, metadata)
-         VALUES ${valueClauses.join(", ")}
+          `INSERT INTO relationships (
+           source_bucket, target_bucket, relation_type, confidence, source_text,
+           source_bucket_id, target_bucket_id, user_id, metadata
+         ) VALUES ${valueClauses.join(", ")}
          ON CONFLICT (source_bucket, target_bucket, relation_type) DO UPDATE SET
            confidence = GREATEST(relationships.confidence, EXCLUDED.confidence),
            source_bucket_id = COALESCE(relationships.source_bucket_id, EXCLUDED.source_bucket_id),

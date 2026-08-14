@@ -1562,30 +1562,59 @@ export class IngestionPipeline {
   }
 
   private async storeConcepts(
-    concepts: Array<Concept & { embedding?: number[] | null }>, documentId?: string, userId?: string | null
-  ): Promise<{ newBuckets: number; mergedBuckets: number; exactMerges: number; bucketIdByLabel: Map<string, string>; mergedBucketIds: string[]; errors: string[]; }> {
+    concepts: Array<Concept & { embedding?: number[] | null }>,
+    documentId?: string,
+    userId?: string | null
+  ): Promise<{
+    newBuckets: number;
+    mergedBuckets: number;
+    exactMerges: number;
+    bucketIdByLabel: Map<string, string>;
+    mergedBucketIds: string[];
+    errors: string[];
+  }> {
     const safeUserId = userId && isValidUuid(userId) ? userId : null;
     const safeDocumentId = documentId && isValidUuid(documentId) ? documentId : null;
     const errors: string[] = [];
-    if (concepts.length === 0) return { newBuckets: 0, mergedBuckets: 0, exactMerges: 0, bucketIdByLabel: new Map(), mergedBucketIds: [], errors };
 
-    const bucketEntries = concepts.map((c) => ({ label: c.label, definition: c.definition, conceptType: c.conceptType, importance: c.importance, source: c.source, documentId: safeDocumentId, userId: safeUserId }));
+    if (concepts.length === 0) {
+      return {
+        newBuckets: 0, mergedBuckets: 0, exactMerges: 0,
+        bucketIdByLabel: new Map(), mergedBucketIds: [], errors,
+      };
+    }
+
+    const bucketEntries = concepts.map((c) => ({
+      label: c.label,
+      definition: c.definition,
+      conceptType: c.conceptType,
+      importance: c.importance,
+      source: c.source,
+      documentId: safeDocumentId,
+      userId: safeUserId,
+    }));
+
     let bulkResult: { newBuckets: number; mergedBuckets: number; bucketIds: string[] };
-
     try {
       const { getBucketStore } = await import("../storage/bucket-store");
       bulkResult = await getBucketStore().bulkUpsertBuckets(bucketEntries);
     } catch (error) {
-      logger.error("bulkUpsertBuckets failed, falling back", { error: (error as Error).message });
-      const bucketIdByLabel = new Map<string, string>(); const mergedBucketIds: string[] = [];
+      logger.error("bulkUpsertBuckets failed, falling back to sequential", { error: (error as Error).message });
+      const bucketIdByLabel = new Map<string, string>();
+      const mergedBucketIds: string[] = [];
       let newBuckets = 0, mergedBuckets = 0, exactMerges = 0;
       for (const c of concepts) {
         try {
           const { getBucketStore } = await import("../storage/bucket-store");
-          const r = await getBucketStore().getOrCreateBucket(c.label, c.definition, c.conceptType, c.importance, c.source, safeDocumentId, safeUserId);
+          const r = await getBucketStore().getOrCreateBucket(
+            c.label, c.definition, c.conceptType, c.importance, c.source, safeDocumentId, safeUserId
+          );
           bucketIdByLabel.set(normalizeLabel(c.label), r.bucketId);
-          if (r.isNew) newBuckets++; else { mergedBuckets++; mergedBucketIds.push(r.bucketId); if (r.exactMerge) exactMerges++; }
-        } catch (err) { errors.push(`Failed to store ${c.label}: ${(err as Error).message}`); }
+          if (r.isNew) newBuckets++;
+          else { mergedBuckets++; mergedBucketIds.push(r.bucketId); if (r.exactMerge) exactMerges++; }
+        } catch (err) {
+          errors.push(`Failed to store ${c.label}: ${(err as Error).message}`);
+        }
       }
       return { newBuckets, mergedBuckets, exactMerges, bucketIdByLabel, mergedBucketIds, errors };
     }
@@ -1598,9 +1627,12 @@ export class IngestionPipeline {
 
     const embedEntries: Array<{ bucketId: string; vector: number[] }> = [];
     for (let i = 0; i < concepts.length; i++) {
-      const c = concepts[i]; const id = bulkResult.bucketIds[i];
+      const c = concepts[i];
+      const id = bulkResult.bucketIds[i];
       if (!id || !c.embedding || !this.embeddingGenerator.validateEmbedding(c.embedding)) {
-        if (id && (!c.embedding || !this.embeddingGenerator.validateEmbedding(c.embedding!))) errors.push(`Missing or invalid embedding for ${c.label}`);
+        if (id && (!c.embedding || !this.embeddingGenerator.validateEmbedding(c.embedding!))) {
+          errors.push(`Missing or invalid embedding for ${c.label}`);
+        }
         continue;
       }
       embedEntries.push({ bucketId: id, vector: c.embedding });
@@ -1610,12 +1642,22 @@ export class IngestionPipeline {
       try {
         const { getEmbeddingStore } = await import("../storage/embedding-store");
         await getEmbeddingStore().batchStoreEmbeddings(embedEntries);
-      } catch (error) { errors.push(`Batch embedding store failed: ${(error as Error).message}`); }
+      } catch (error) {
+        errors.push(`Batch embedding store failed: ${(error as Error).message}`);
+      }
     }
 
+    const mergedBucketIds = bulkResult.mergedBuckets > 0
+      ? bulkResult.bucketIds.slice(concepts.length - bulkResult.mergedBuckets)
+      : [];
+
     return {
-      newBuckets: bulkResult.newBuckets, mergedBuckets: bulkResult.mergedBuckets, exactMerges: bulkResult.mergedBuckets,
-      bucketIdByLabel, mergedBucketIds: bulkResult.mergedBuckets > 0 ? bulkResult.bucketIds.slice(concepts.length - bulkResult.mergedBuckets) : [], errors,
+      newBuckets: bulkResult.newBuckets,
+      mergedBuckets: bulkResult.mergedBuckets,
+      exactMerges: bulkResult.mergedBuckets,
+      bucketIdByLabel,
+      mergedBucketIds,
+      errors,
     };
   }
 
