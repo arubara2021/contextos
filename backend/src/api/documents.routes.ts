@@ -827,13 +827,9 @@ router.post(
       });
 
       // --- TRIGGER.DEV BACKGROUND PROCESSING ---
-      // --- TRIGGER.DEV BACKGROUND PROCESSING ---
-      logger.info("=== UPLOAD ROUTE: Starting Trigger.dev attempt ===", { jobId, userId: req.userId });
       let triggerSucceeded = false;
       try {
-        logger.info("Importing processDocumentTask...", { jobId });
         const { processDocumentTask } = await import("../tasks/document-processing.task");
-        logger.info("Triggering task...", { jobId });
         await processDocumentTask.trigger({ jobId, userId: req.userId });
         logger.info("=== TRIGGER.DEV SUCCESS ===", { jobId });
         triggerSucceeded = true;
@@ -841,28 +837,11 @@ router.post(
         logger.error("=== TRIGGER.DEV FAILED ===", {
           jobId,
           errorMessage: (triggerError as Error).message,
-          errorStack: (triggerError as Error).stack,
         });
       }
 
       if (!triggerSucceeded) {
         logger.info("=== FALLING BACK TO LOCAL PROCESSING ===", { jobId });
-        const work = processDocumentAsync(
-          jobId, req.userId, file.originalname, fileType, format,
-          mimeType, file.size, file.buffer
-        ).catch((err) => {
-          logger.error("Background processing unhandled error", { jobId, error: (err as Error).message });
-        });
-        try {
-          const { waitUntil } = await import("@vercel/functions");
-          waitUntil(work);
-        } catch { void work; }
-      } else {
-        logger.info("=== TRIGGER.DEV PATH COMPLETE ===", { jobId });
-      }
-
-      // Fallback to local processing if Trigger.dev fails
-      if (!triggerSucceeded) {
         const work = processDocumentAsync(
           jobId, req.userId, file.originalname, fileType, format,
           mimeType, file.size, file.buffer
