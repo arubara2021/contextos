@@ -2,8 +2,8 @@ name: ContextOS Document Worker
 
 on:
   schedule:
-    - cron: '*/1 * * * *'
-  workflow_dispatch:
+    - cron: '*/5 * * * *'  # Runs automatically every 5 minutes
+  workflow_dispatch: 
 
 jobs:
   process-documents:

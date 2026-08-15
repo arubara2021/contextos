@@ -321,6 +321,8 @@ async function runLoop(): Promise<void> {
 
     initPool();
     initializeDependencies();
+    await query("SELECT 1").catch(() => { }); // Wakes up CockroachDB Serverless
+    logger.info("Database pinged and awake");
 
     while (true) {
         try {
