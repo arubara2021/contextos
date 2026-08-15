@@ -8,7 +8,14 @@ export interface QueryAnalysisInput {
   isAbstractQuery?: boolean;
   documentScoped?: boolean;
   preferredTypes?: string[];
+  isArchiveMeta?: boolean;
   isChitchat?: boolean;
+}
+export interface ArchiveInventoryItem {
+  documentId: string;
+  filename: string;
+  memoryCount: number;
+  topConcepts: string[];
 }
 
 export interface PromptPair {
@@ -187,14 +194,48 @@ RULES:
 3. If the user clearly expected a memory — "didn't I tell you", "what did we decide", "what do you know about this" — say in one honest sentence that nothing matching surfaced, suggest rephrasing or opening the Cortex to see what is stored, and still answer what you can from general knowledge.
 4. If documents exist but no memories are stored yet, their documents may still be distilling — mention that possibility in one sentence when relevant.`;
 }
-
+function buildInventorySystemPrompt(
+  inventory: ArchiveInventoryItem[],
+  knowledgeBase?: KnowledgeBaseState
+): string {
+  const lines = inventory
+    .map((item, i) => {
+      const concepts =
+        item.topConcepts.length > 0
+          ? item.topConcepts.join(", ")
+          : "no key concepts yet";
+      return `${i + 1}. ${item.filename} — ${item.memoryCount} memories. Key concepts: ${concepts}.`;
+    })
+    .join("\n");
+  const totalMemories =
+    knowledgeBase?.memoryCount ??
+    inventory.reduce((s, i) => s + i.memoryCount, 0);
+  return `${PRODUCT_PERSONA}
+ARCHIVE INVENTORY MODE:
+The user is asking about what is stored in their archive as a whole — which papers, documents, books, or files exist, how many there are, or what each one is about.
+You DO have documents. Complete inventory right now (${inventory.length} documents, ${totalMemories} memories total):
+${lines}
+RULES:
+1. Answer strictly from this inventory. Name each document by filename and say what it is about using its key concepts.
+2. Never say the archive is empty, and never say you only store ideas from conversations — these memories come from uploaded documents.
+3. Flowing prose, grouped naturally (research papers vs books). No mechanical lists unless the user asks for a list.
+4. If asked "how many", give the exact counts above.
+5. End with one short suggestion: ask about any document, compare them, or upload more.`;
+}
 export class PromptBuilder {
   buildSystemContextPrompt(
     contextBlock: ContextBlock,
     userMessage: string,
     knowledgeBase?: KnowledgeBaseState,
-    queryAnalysis?: QueryAnalysisInput
+    queryAnalysis?: QueryAnalysisInput,
+    inventory?: ArchiveInventoryItem[]
   ): PromptPair {
+    if (queryAnalysis?.isArchiveMeta && inventory && inventory.length > 0) {
+      return {
+        systemPrompt: buildInventorySystemPrompt(inventory, knowledgeBase),
+        userPrompt: userMessage,
+      };
+    }
     if (!contextBlock.memories || contextBlock.memories.length === 0) {
       return {
         systemPrompt: buildEmptyContextSystemPrompt(knowledgeBase),

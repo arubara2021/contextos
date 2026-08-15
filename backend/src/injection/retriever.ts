@@ -102,6 +102,7 @@ export interface QuerySpec {
   documentScoped?: boolean;
   currentDocumentId?: string;
   recentBucketIds?: string[];
+  isArchiveMeta?: boolean;
   isChitchat?: boolean;
 }
 
@@ -1284,13 +1285,20 @@ export class Retriever {
 
       values.push(HIGH_IMPORTANCE_FALLBACK_LIMIT);
       const limitParam = values.length;
-
       const rows = await queryMany<{ bucket_id: string }>(
         `SELECT bucket_id
+       FROM (
+         SELECT bucket_id, importance, strength, last_accessed,
+                ROW_NUMBER() OVER (
+                  PARTITION BY COALESCE(document_id::text, 'none')
+                  ORDER BY importance DESC, strength DESC, last_accessed DESC
+                ) AS per_doc_rank
          FROM buckets
          WHERE ${clauses.join(" AND ")}
-         ORDER BY importance DESC, strength DESC, last_accessed DESC
-         LIMIT $${limitParam}`,
+       ) ranked
+       WHERE per_doc_rank <= 4
+       ORDER BY importance DESC, strength DESC, last_accessed DESC
+       LIMIT $${limitParam}`,
         values
       );
 

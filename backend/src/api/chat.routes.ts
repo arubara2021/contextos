@@ -89,6 +89,58 @@ async function getKnowledgeBaseState(
     return { memoryCount: 0, documentCount: 0, hasKnowledge: false };
   }
 }
+interface ArchiveInventoryItem {
+  documentId: string;
+  filename: string;
+  memoryCount: number;
+  topConcepts: string[];
+}
+async function getArchiveInventory(
+  userId: string
+): Promise<ArchiveInventoryItem[]> {
+  const docs = await queryMany<{
+    document_id: string;
+    filename: string;
+    memory_count: number;
+  }>(
+    `SELECT d.document_id, d.filename, COUNT(b.bucket_id)::int AS memory_count
+     FROM documents d
+     LEFT JOIN buckets b ON b.document_id = d.document_id
+     WHERE d.user_id = $1::uuid
+     GROUP BY d.document_id, d.filename
+     ORDER BY MAX(d.uploaded_at) DESC
+     LIMIT 10`,
+    [userId]
+  );
+  if (docs.length === 0) return [];
+  const ids = docs.map((d) => d.document_id);
+  const tops = await queryMany<{ document_id: string; canonical: string }>(
+    `SELECT document_id, canonical
+     FROM (
+       SELECT document_id, canonical,
+              ROW_NUMBER() OVER (
+                PARTITION BY document_id
+                ORDER BY importance DESC, strength DESC, last_accessed DESC
+              ) AS rn
+       FROM buckets
+       WHERE user_id = $1::uuid AND document_id = ANY($2::uuid[])
+     ) t
+     WHERE rn <= 3`,
+    [userId, ids]
+  );
+  const byDoc = new Map<string, string[]>();
+  for (const t of tops) {
+    const list = byDoc.get(t.document_id) ?? [];
+    list.push(t.canonical);
+    byDoc.set(t.document_id, list);
+  }
+  return docs.map((d) => ({
+    documentId: d.document_id,
+    filename: d.filename,
+    memoryCount: Number(d.memory_count ?? 0),
+    topConcepts: byDoc.get(d.document_id) ?? [],
+  }));
+}
 
 function toModelFailurePayload(
   error: Error,
@@ -610,7 +662,17 @@ router.post(
         queryAnalysis = await queryAnalyzer.analyze(validated.message);
       }
       const queryAnalysisMs = Date.now() - start;
-
+      let archiveInventory: ArchiveInventoryItem[] | undefined;
+      if (Boolean((queryAnalysis as any)?.isArchiveMeta)) {
+        try {
+          archiveInventory = await getArchiveInventory(req.userId);
+        } catch (error) {
+          logger.debug("Archive inventory lookup failed", {
+            error: (error as Error).message,
+          });
+          archiveInventory = undefined;
+        }
+      }
       const retrievalStart = Date.now();
       let scoredCandidates: any[] = [];
       try {
@@ -688,7 +750,8 @@ router.post(
         contextBlock,
         validated.message,
         knowledgeBase,
-        queryAnalysis
+        queryAnalysis,
+        archiveInventory
       );
       const systemPrompt = promptPair?.systemPrompt ?? "";
       const userPrompt = promptPair?.userPrompt ?? validated.message;

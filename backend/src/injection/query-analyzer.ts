@@ -697,6 +697,20 @@ function detectIsAbstract(text: string): boolean {
 
   return false;
 }
+const ARCHIVE_META_PATTERNS: RegExp[] = [
+  /\bwhat\s+(papers?|documents?|docs?|files?|books?)\b/i,
+  /\b(which|list|show)\s+(my|the|all)\s+(papers?|documents?|docs?|files?|uploads?|books?)\b/i,
+  /\b(my|the|all|any)\s+(papers?|documents?|docs?|files?|uploads?|books?)\b[\s\S]{0,60}\b(have|hold|contains?|stored?|uploaded|include)\b/i,
+  /\b(have|hold|contain|include)\s+(you|the\s+archive)\b/i,
+  /\bhow\s+many\s+(papers?|documents?|docs?|files?|memories?|books?)\b/i,
+  /\bin\s+(my|the)\s+(archive|knowledge\s*base)\b/i,
+  /\bwhat\s+do\s+(you|we)\s+have\b/i,
+  /\b(summarize|summary|overview)\b[\s\S]{0,30}\b(my|the|all)\b[\s\S]{0,30}(papers?|documents?|docs?|files?|uploads?|books?|archive)\b/i,
+  /\babout\s+(my|the)\s+(papers?|documents?|docs?|files?|books?|archive)\b/i,
+];
+function detectArchiveMeta(text: string): boolean {
+  return ARCHIVE_META_PATTERNS.some((p) => p.test(text));
+}
 
 function detectDocumentScoped(text: string): boolean {
   return DOCUMENT_SCOPED_PATTERNS.some((pattern) => pattern.test(text));
@@ -724,6 +738,7 @@ export class QueryAnalyzer {
     const intent = chitchat ? "chitchat" : detectIntent(queryText);
     const isAbstractQuery = chitchat ? false : detectIsAbstract(queryText);
     const documentScoped = chitchat ? false : detectDocumentScoped(queryText);
+    const isArchiveMeta = chitchat ? false : detectArchiveMeta(queryText);
 
     let specificity = chitchat ? 0 : computeSpecificity(queryText);
 
@@ -750,6 +765,7 @@ export class QueryAnalyzer {
       preferredTypes,
       isAbstractQuery,
       documentScoped,
+      isArchiveMeta,
       isChitchat: chitchat,
     };
 
@@ -865,6 +881,7 @@ export class QueryAnalyzer {
             : heuristic.preferredTypes,
         isAbstractQuery,
         documentScoped,
+        isArchiveMeta: heuristic.isArchiveMeta,
         isChitchat: false,
       };
     } catch (error) {
