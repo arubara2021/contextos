@@ -5,7 +5,7 @@ import type {
   StrengthCategory,
 } from "../types";
 
-export type CortexNodeKind = "core" | "document" | "concept";
+export type CortexNodeKind = "core" | "domain" | "document" | "concept";
 
 export interface GraphNode {
   id: string;

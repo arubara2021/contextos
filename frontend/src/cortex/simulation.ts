@@ -13,7 +13,7 @@ export class ForceSimulation {
       if (node.fx === undefined) node.fx = null;
       if (node.fy === undefined) node.fy = null;
       const kind = (node as { kind?: string }).kind;
-      if ((kind === "core" || kind === "document") && node.fx == null) {
+      if ((kind === "core" || kind === "domain" || kind === "document") && node.fx == null) {
         node.fx = node.x;
         node.fy = node.y;
       }
@@ -38,7 +38,7 @@ export class ForceSimulation {
 
   private isStableNode(node: GraphNode): boolean {
     const kind = (node as { kind?: string }).kind;
-    return kind === "core" || kind === "document";
+    return kind === "core" || kind === "domain" || kind === "document";
   }
 
   private drift(dt: number): void {

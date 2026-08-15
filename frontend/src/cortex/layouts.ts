@@ -77,13 +77,23 @@ function docRadius(node: GraphNode): number {
 }
 
 function initializeNode(node: GraphNode): void {
-  if ((node.kind ?? "concept") === "core") {
+  const kind = node.kind ?? "concept";
+  if (kind === "core") {
     node.radius = DEFAULT_CORE_RADIUS;
     node.boxWidth = DEFAULT_CORE_RADIUS * 2;
     node.boxHeight = DEFAULT_CORE_RADIUS * 2;
     return;
   }
-  if ((node.kind ?? "concept") === "document") {
+  if (kind === "domain") {
+    node.radius = Math.min(
+      96,
+      60 + Math.min(36, Math.sqrt(Math.max(0, node.accessCount ?? 0)) * 2.5)
+    );
+    node.boxWidth = node.radius * 2;
+    node.boxHeight = node.radius * 2;
+    return;
+  }
+  if (kind === "document") {
     node.boxWidth = defaultDocWidth();
     node.boxHeight = defaultDocHeight();
     node.radius = docRadius(node);
@@ -330,70 +340,168 @@ function timeline(nodes: GraphNode[]): void {
     );
   });
 }
+function estimateCloudRadius(members: GraphNode[], centerRadius: number): number {
+  if (members.length === 0) return 0;
+  const avgR = members.reduce((sum, n) => sum + n.radius, 0) / members.length;
+  const slot = 2 * avgR + CONCEPT_SLOT_GAP;
+  let radius = centerRadius + avgR + CONCEPT_SLOT_GAP;
+  let remaining = members.length;
+  while (remaining > 0) {
+    const capacity = Math.max(1, Math.floor((TAU * radius) / slot));
+    remaining -= capacity;
+    if (remaining > 0) radius += slot;
+  }
+  return radius + avgR;
+}
 
 function coreLayout(nodes: GraphNode[]): void {
-  const coreNode = nodes.find((node) => (node.kind ?? "concept") === "core");
+  const hubs = nodes.filter((node) => (node.kind ?? "concept") === "domain");
+  const legacyCore = nodes.find((node) => (node.kind ?? "concept") === "core");
   const documents = nodes.filter((node) => (node.kind ?? "concept") === "document");
   const concepts = nodes.filter((node) => (node.kind ?? "concept") === "concept");
-
-  if (coreNode) {
-    pin(coreNode, 0, 0);
-    coreNode.clusterId = "core";
-    coreNode.clusterCenterX = 0;
-    coreNode.clusterCenterY = 0;
-  }
 
   const docById = new Map<string, GraphNode>();
   for (const d of documents) docById.set(d.id, d);
 
-  // Documents grouped into sectors by domain (topic)
-  const groups = new Map<string, GraphNode[]>();
-  for (const doc of documents) {
-    const domain = String((doc as any).domain ?? "general");
-    if (!groups.has(domain)) groups.set(domain, []);
-    groups.get(domain)!.push(doc);
+  const hubByDomain = new Map<string, GraphNode>();
+  for (const hub of hubs) {
+    hubByDomain.set(String(hub.domain ?? ""), hub);
   }
-  const domainList = Array.from(groups.entries()).sort((a, b) =>
-    a[0].localeCompare(b[0])
-  );
-  const domainCount = Math.max(1, domainList.length);
 
-  domainList.forEach(([domain, docs], di) => {
-    const sector = -Math.PI / 2 + (di / domainCount) * TAU;
-    const sorted = docs
-      .slice()
-      .sort((a, b) => (b.conceptCount ?? 0) - (a.conceptCount ?? 0));
-    sorted.forEach((doc, i) => {
-      const spread = sorted.length > 1 ? i / (sorted.length - 1) - 0.5 : 0;
-      const angle = sector + spread * 0.7;
-      const radius = 320 + (i % 2) * 190;
-      pin(doc, Math.cos(angle) * radius, Math.sin(angle) * radius);
-      doc.clusterId = `domain:${domain}`;
-      doc.clusterCenterX = Math.cos(sector) * 320;
-      doc.clusterCenterY = Math.sin(sector) * 320;
-    });
-  });
-
-  // Concepts form ISOLATED islands around their own document
-  const byDoc = new Map<string, GraphNode[]>();
-  const orphan: GraphNode[] = [];
+  // ---- concepts grouped by owning document ----
+  const conceptsByDoc = new Map<string, GraphNode[]>();
+  const orphans: GraphNode[] = [];
   for (const c of concepts) {
     const did = String((c as any).documentId ?? "");
     const key = did ? `doc:${did}` : "";
     if (key && docById.has(key)) {
-      if (!byDoc.has(key)) byDoc.set(key, []);
-      byDoc.get(key)!.push(c);
+      if (!conceptsByDoc.has(key)) conceptsByDoc.set(key, []);
+      conceptsByDoc.get(key)!.push(c);
     } else {
-      orphan.push(c);
+      orphans.push(c);
     }
   }
-  for (const [docKey, members] of byDoc) {
+
+  // ---- how far each document's concept cloud reaches ----
+  const cloudRadius = new Map<string, number>();
+  for (const [docKey, members] of conceptsByDoc.entries()) {
+    const doc = docById.get(docKey);
+    cloudRadius.set(docKey, estimateCloudRadius(members, (doc?.radius ?? 60) + 34));
+  }
+
+  // ---- documents grouped per domain ----
+  const docsByDomain = new Map<string, GraphNode[]>();
+  for (const doc of documents) {
+    const domain = String(doc.domain ?? "general");
+    const list = docsByDomain.get(domain) ?? [];
+    list.push(doc);
+    docsByDomain.set(domain, list);
+  }
+
+  // ---- angle slots + orbit radii per domain (collision-free) ----
+  interface DocSlot {
+    doc: GraphNode;
+    cloud: number;
+    orbit: number;
+    angle: number;
+  }
+  const slotsByDomain = new Map<string, DocSlot[]>();
+  const clusterRadiusByDomain = new Map<string, number>();
+
+  for (const [domain, docs] of docsByDomain.entries()) {
+    const hub = hubByDomain.get(domain);
+    const hubR = hub?.radius ?? legacyCore?.radius ?? DEFAULT_CORE_RADIUS;
+    const sorted = docs
+      .slice()
+      .sort((a, b) => (cloudRadius.get(b.id) ?? 0) - (cloudRadius.get(a.id) ?? 0));
+    const weights = sorted.map((d) => (cloudRadius.get(d.id) ?? 0) + 160);
+    const totalW = Math.max(1, weights.reduce((s, w) => s + w, 0));
+
+    let acc = -Math.PI / 2;
+    const slots: DocSlot[] = sorted.map((doc, i) => {
+      const share = (weights[i] / totalW) * TAU;
+      const angle = acc + share / 2;
+      acc += share;
+      return {
+        doc,
+        cloud: cloudRadius.get(doc.id) ?? 0,
+        orbit: hubR + 190 + (cloudRadius.get(doc.id) ?? 0),
+        angle,
+      };
+    });
+
+    // push orbits outward until sibling clouds cannot overlap
+    if (slots.length > 1) {
+      let scale = 1;
+      for (let i = 0; i < slots.length; i++) {
+        const a = slots[i];
+        const b = slots[(i + 1) % slots.length];
+        const delta =
+          (((weights[i] + weights[(i + 1) % slots.length]) / totalW) * TAU) / 2;
+        const minOrbit = Math.min(a.orbit, b.orbit);
+        const chord = 2 * minOrbit * Math.sin(Math.min(Math.PI, delta) / 2);
+        const need = a.cloud + b.cloud + 150;
+        if (chord < need) scale = Math.max(scale, need / Math.max(chord, 1));
+      }
+      scale = Math.min(scale, 3);
+      if (scale > 1) for (const s of slots) s.orbit *= scale;
+    }
+
+    let clusterR = hubR + 240;
+    for (const s of slots) clusterR = Math.max(clusterR, s.orbit + s.cloud);
+    slotsByDomain.set(domain, slots);
+    clusterRadiusByDomain.set(domain, clusterR);
+  }
+
+  // ---- place domain hubs far enough apart for their full clusters ----
+  const HUB_GAP = 240;
+  if (hubs.length === 1) {
+    pin(hubs[0], 0, 0);
+    hubs[0].clusterId = `hub:${String(hubs[0].domain ?? "")}`;
+    hubs[0].clusterCenterX = 0;
+    hubs[0].clusterCenterY = 0;
+  } else if (hubs.length > 1) {
+    hubs.forEach((hub, hi) => {
+      const angle = -Math.PI / 2 + (hi / hubs.length) * TAU;
+      const dist = (clusterRadiusByDomain.get(String(hub.domain ?? "")) ?? 300) + HUB_GAP / 2;
+      pin(hub, Math.cos(angle) * dist, Math.sin(angle) * dist);
+      hub.clusterId = `hub:${String(hub.domain ?? "")}`;
+      hub.clusterCenterX = hub.x;
+      hub.clusterCenterY = hub.y;
+    });
+  }
+  if (hubs.length === 0 && legacyCore) {
+    pin(legacyCore, 0, 0);
+    legacyCore.clusterId = "core";
+    legacyCore.clusterCenterX = 0;
+    legacyCore.clusterCenterY = 0;
+  }
+
+  // ---- documents orbit their domain hub at safe distance ----
+  for (const [domain, slots] of slotsByDomain.entries()) {
+    const hub = hubByDomain.get(domain) ?? legacyCore;
+    const cx = hub?.x ?? 0;
+    const cy = hub?.y ?? 0;
+    for (const slot of slots) {
+      pin(
+        slot.doc,
+        cx + Math.cos(slot.angle) * slot.orbit,
+        cy + Math.sin(slot.angle) * slot.orbit
+      );
+      slot.doc.clusterId = `domain:${domain}`;
+      slot.doc.clusterCenterX = cx;
+      slot.doc.clusterCenterY = cy;
+    }
+  }
+
+  // ---- concepts pack around their own document ----
+  for (const [docKey, members] of conceptsByDoc.entries()) {
     const doc = docById.get(docKey);
     if (!doc) continue;
     packAroundCenter(doc.x, doc.y, doc.radius + 34, members, `island:${docKey}`);
   }
-  if (orphan.length > 0) {
-    packCluster(0, 680, orphan, "core-concepts");
+  if (orphans.length > 0) {
+    packCluster(0, 680, orphans, "core-concepts");
   }
 }
 

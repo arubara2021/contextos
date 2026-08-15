@@ -32,7 +32,7 @@ export function findNodeAt(
       }
       continue;
     }
-    if (kind === "core") {
+    if (kind === "core" || kind === "domain") {
       const radius = Math.max(node.radius || 32, 30) + 20;
       if (dist <= radius + slack) {
         const score = dist - 6;

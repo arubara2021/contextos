@@ -25,7 +25,7 @@ import type {
   StrengthCategory,
 } from "../types";
 
-type CortexNodeKind = "core" | "document" | "concept";
+type CortexNodeKind = "core" | "domain" | "document" | "concept";
 type CortexSceneMode = "core" | "document" | "graph";
 type CortexLinkFilter = "all" | "linked" | "islands";
 
@@ -134,6 +134,15 @@ const HERO_PARTICLES: HeroParticleConfig[] = [
 function toTimestamp(value: string | number): number {
   const parsed = typeof value === "number" ? value : new Date(value).getTime();
   return Number.isFinite(parsed) ? parsed : Date.now();
+}
+function formatDomainLabel(domain: string): string {
+  return (
+    domain
+      .split(/[-_\s]+/)
+      .filter((part) => part.length > 0)
+      .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(" ") || "General"
+  );
 }
 
 function createCortexNode(input: {
@@ -376,21 +385,44 @@ export function CortexPage() {
   const inDeepView = inDocumentView || inCoreExpanded;
 
   const coreNodes = useMemo<CortexGraphNode[]>(() => {
-    const averageStrength = core?.averageStrength ?? 0;
-    const nodes: CortexGraphNode[] = [
-      createCortexNode({
-        id: "core:main",
-        label: "Memory Core",
-        conceptType: "entity",
-        importance: 10,
-        strength: averageStrength,
-        category: strengthCategory(averageStrength),
-        accessCount: core?.totalMemories ?? 0,
-        daysSinceAccess: 0,
-        createdAt: Date.now(),
-        kind: "core",
-      }),
-    ];
+    const nodes: CortexGraphNode[] = [];
+
+    // ---- one big orbit hub per domain ----
+    const docsByDomain = new Map<string, CortexDocumentNodeLike[]>();
+    for (const document of documents) {
+      const domain = String((document as any).domain ?? "general") || "general";
+      const list = docsByDomain.get(domain) ?? [];
+      list.push(document);
+      docsByDomain.set(domain, list);
+    }
+    const domainEntries = Array.from(docsByDomain.entries()).sort((a, b) =>
+      a[0].localeCompare(b[0])
+    );
+    for (const [domain, docs] of domainEntries) {
+      const totalMemories = docs.reduce((sum, d) => sum + (d.conceptCount ?? 0), 0);
+      const strengthSum = docs.reduce(
+        (sum, d) => sum + (d.averageStrength ?? 0) * (d.conceptCount ?? 0),
+        0
+      );
+      const averageStrength = totalMemories > 0 ? strengthSum / totalMemories : 0;
+      nodes.push(
+        createCortexNode({
+          id: `domain:${domain}`,
+          label: formatDomainLabel(domain),
+          conceptType: "entity",
+          importance: 10,
+          strength: averageStrength,
+          category: strengthCategory(averageStrength),
+          accessCount: totalMemories,
+          daysSinceAccess: 0,
+          createdAt: Date.now(),
+          kind: "domain",
+          domain,
+        })
+      );
+    }
+
+    // ---- document cards (unchanged) ----
     for (const document of documents) {
       const conceptCount = document.conceptCount ?? 0;
       const averageDocumentStrength = document.averageStrength ?? 0;
@@ -419,20 +451,21 @@ export function CortexPage() {
       );
     }
     return nodes;
-  }, [core, documents]);
+  }, [documents]);
 
   const coreEdges = useMemo<GraphEdge[]>(
     () =>
-      documents.map((document) =>
-        createCortexEdge({
-          id: `core-doc-${document.documentId}`,
-          source: "core:main",
+      documents.map((document) => {
+        const domain = String((document as any).domain ?? "general") || "general";
+        return createCortexEdge({
+          id: `domain-doc-${document.documentId}`,
+          source: `domain:${domain}`,
           target: `doc:${document.documentId}`,
           type: "part_of",
           confidence: 1,
           edgeKind: "core-document",
-        })
-      ),
+        });
+      }),
     [documents]
   );
 

@@ -580,7 +580,9 @@ export class CortexRenderer {
       const isCoreEdge =
         edge.edgeKind === "core-document" ||
         (a.kind ?? "concept") === "core" ||
-        (b.kind ?? "concept") === "core";
+        (b.kind ?? "concept") === "core" ||
+        (a.kind ?? "concept") === "domain" ||
+        (b.kind ?? "concept") === "domain";
       const isBridge =
         edge.edgeKind === "document-bridge" || edge.crossDocument === true;
       const dx = b.x - a.x;
@@ -861,7 +863,7 @@ export class CortexRenderer {
   ): void {
     for (const node of scene.nodes) {
       const kind = node.kind ?? "concept";
-      if (kind === "core") {
+      if (kind === "core" || kind === "domain") {
         this.drawCoreNode(node, emphasis, options, camera);
         continue;
       }
@@ -1049,14 +1051,14 @@ export class CortexRenderer {
     ctx.restore();
 
     const zoom = camera.zoom;
-    const titleScreen = clampScalar(r * zoom * 0.32, 10, 18);
+    const titleScreen = clampScalar(r * zoom * 0.32, 14, 26);
     const titleSize = titleScreen / zoom;
     ctx.font = `600 ${titleSize}px 'Spline Sans Mono', monospace`;
     ctx.textAlign = "center";
     ctx.textBaseline = "top";
     ctx.fillStyle = "#ECE5DA";
     ctx.fillText(node.label, node.x, node.y + r + 16 / zoom);
-    const metaScreen = clampScalar(r * zoom * 0.2, 8, 12);
+    const metaScreen = clampScalar(r * zoom * 0.2, 10, 16);
     const metaSize = metaScreen / zoom;
     ctx.font = `500 ${metaSize}px 'Spline Sans Mono', monospace`;
     ctx.fillStyle = "rgba(162, 147, 132, 0.9)";

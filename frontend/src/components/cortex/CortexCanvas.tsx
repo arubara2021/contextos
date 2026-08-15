@@ -466,7 +466,7 @@ export function CortexCanvas(props: CortexCanvasProps) {
     const current = propsRef.current;
     const kind = node.kind ?? "concept";
     fireRails(node.id);
-    if (kind === "core") {
+    if (kind === "core" || kind === "domain") {
       if (current.onCoreClick) current.onCoreClick();
       else current.onNodeClick?.(node);
       return;
@@ -695,7 +695,7 @@ export function CortexCanvas(props: CortexCanvasProps) {
         current.onDocumentOpen(node);
         return;
       }
-      if (kind === "core" && current.onCoreClick) {
+      if ((kind === "core" || kind === "domain") && current.onCoreClick) {
         current.onCoreClick();
         return;
       }
