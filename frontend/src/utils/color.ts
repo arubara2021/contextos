@@ -137,19 +137,3 @@ export function typeGlow(type: ConceptType, alpha = 0.4): string {
 export function relationshipColor(type: RelationshipType): string {
   return RELATIONSHIP_TYPES[type]?.color ?? "rgba(236, 229, 218, 0.16)";
 }
-export const DOMAIN_PALETTE: string[] = [
-  "#FF8A3D",
-  "#8FD8D2",
-  "#F4D06F",
-  "#86B4E8",
-  "#E39AB8",
-  "#9DB98A",
-  "#FF5C49",
-  "#C4EFEB",
-];
-export function domainColor(domain: string | null | undefined): string {
-  const key = String(domain ?? "general").toLowerCase();
-  let h = 0;
-  for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) % 9973;
-  return DOMAIN_PALETTE[h % DOMAIN_PALETTE.length];
-}

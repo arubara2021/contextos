@@ -24,8 +24,7 @@ interface CortexCanvasProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
   layout: LayoutMode;
-  sceneMode?: "core" | "document" | "domain" | "graph";
-  onDomainClick?: (node: GraphNode) => void;
+  sceneMode?: "core" | "document" | "graph";
   highlightedIds: string[];
   selectedId: string | null;
   focusedId: string | null;
@@ -102,7 +101,7 @@ export function CortexCanvas(props: CortexCanvasProps) {
     null
   );
   const layoutRef = useRef<LayoutMode>(props.layout);
-  const sceneModeRef = useRef<"core" | "document" | "domain" | "graph">(
+  const sceneModeRef = useRef<"core" | "document" | "graph">(
     props.sceneMode ?? "graph"
   );
   const structureRef = useRef("");
@@ -162,9 +161,7 @@ export function CortexCanvas(props: CortexCanvasProps) {
         ? "core"
         : sceneModeRef.current === "document"
           ? "document"
-          : sceneModeRef.current === "domain"
-            ? "document"
-            : layoutRef.current;
+          : layoutRef.current;
     applyLayout(sceneRef.current.nodes, mode);
   };
 
@@ -474,11 +471,6 @@ export function CortexCanvas(props: CortexCanvasProps) {
       else current.onNodeClick?.(node);
       return;
     }
-    if (kind === "domain") {
-      if (current.onDomainClick) current.onDomainClick(node);
-      else current.onNodeClick?.(node);
-      return;
-    }
     if (kind === "document") {
       if (current.selectedId === node.id && current.onDocumentOpen) {
         current.onDocumentOpen(node);
@@ -699,10 +691,6 @@ export function CortexCanvas(props: CortexCanvasProps) {
     const node = pickNode(ox, oy, false);
     if (node) {
       const kind = node.kind ?? "concept";
-      if (kind === "domain" && current.onDomainClick) {
-        current.onDomainClick(node);
-        return;
-      }
       if (kind === "document" && current.onDocumentOpen) {
         current.onDocumentOpen(node);
         return;

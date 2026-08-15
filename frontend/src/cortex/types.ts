@@ -4,7 +4,9 @@ import type {
   RelationshipType,
   StrengthCategory,
 } from "../types";
-export type CortexNodeKind = "core" | "document" | "concept" | "domain";
+
+export type CortexNodeKind = "core" | "document" | "concept";
+
 export interface GraphNode {
   id: string;
   label: string;
@@ -23,7 +25,6 @@ export interface GraphNode {
   held: boolean;
   kind?: CortexNodeKind;
   domain?: string | null;
-  domainColor?: string | null;
   documentId?: string | null;
   documentState?: CortexDocumentState;
   fileType?: string;
@@ -49,6 +50,7 @@ export interface GraphNode {
   orbitRadius?: number;
   orbitSpeed?: number;
 }
+
 export interface GraphEdge {
   id: string;
   source: string;
@@ -59,12 +61,12 @@ export interface GraphEdge {
   | "core-document"
   | "document-concept"
   | "concept-concept"
-  | "document-bridge"
-  | "domain-bridge";
+  | "document-bridge";
   crossDocument?: boolean;
   sourceDocumentId?: string | null;
   targetDocumentId?: string | null;
 }
+
 export interface Scene {
   nodes: GraphNode[];
   edges: GraphEdge[];
@@ -73,8 +75,11 @@ export interface Scene {
   documentNodes?: GraphNode[];
   conceptNodes?: GraphNode[];
 }
+
 export type LayoutMode = "constellation" | "orbit" | "timeline";
-export type CortexLayoutMode = LayoutMode | "core" | "document" | "domain";
+
+export type CortexLayoutMode = LayoutMode | "core" | "document";
+
 export interface Signal {
   id: string;
   edgeId: string;
@@ -83,11 +88,13 @@ export interface Signal {
   color: string;
   reverse: boolean;
 }
+
 export interface HoverState {
   nodeId: string | null;
   x: number;
   y: number;
 }
+
 export interface RenderOptions {
   layout: LayoutMode;
   reducedMotion: boolean;
@@ -101,6 +108,7 @@ export interface RenderOptions {
   time: number;
   dpr: number;
 }
+
 export function createGraphNode(input: {
   id: string;
   label: string;
@@ -115,7 +123,6 @@ export function createGraphNode(input: {
   y?: number;
   kind?: CortexNodeKind;
   domain?: string | null;
-  domainColor?: string | null;
   documentId?: string | null;
   documentState?: CortexDocumentState;
   fileType?: string;
@@ -148,7 +155,6 @@ export function createGraphNode(input: {
     held: false,
     kind: input.kind ?? "concept",
     domain: input.domain ?? null,
-    domainColor: input.domainColor ?? null,
     documentId: input.documentId ?? null,
     documentState: input.documentState,
     fileType: input.fileType,
@@ -164,6 +170,7 @@ export function createGraphNode(input: {
     boxHeight: input.boxHeight,
   };
 }
+
 export function createGraphEdge(input: {
   id: string;
   source: string;
@@ -174,8 +181,7 @@ export function createGraphEdge(input: {
   | "core-document"
   | "document-concept"
   | "concept-concept"
-  | "document-bridge"
-  | "domain-bridge";
+  | "document-bridge";
   crossDocument?: boolean;
   sourceDocumentId?: string | null;
   targetDocumentId?: string | null;
@@ -192,6 +198,7 @@ export function createGraphEdge(input: {
     targetDocumentId: input.targetDocumentId ?? null,
   };
 }
+
 export function buildScene(nodes: GraphNode[], edges: GraphEdge[]): Scene {
   return {
     nodes,

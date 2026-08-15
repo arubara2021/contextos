@@ -1,7 +1,9 @@
 import type { GraphEdge, GraphNode } from "./types";
+
 export interface HitTestOptions {
   touch?: boolean;
 }
+
 export function findNodeAt(
   nodes: GraphNode[],
   wx: number,
@@ -41,17 +43,6 @@ export function findNodeAt(
       }
       continue;
     }
-    if (kind === "domain") {
-      const radius = Math.max(node.radius || 44, 40) + 16;
-      if (dist <= radius + slack) {
-        const score = dist - 8;
-        if (score < bestScore) {
-          best = node;
-          bestScore = score;
-        }
-      }
-      continue;
-    }
     if (dist <= node.radius + slack) {
       const score = dist - 12;
       if (score < bestScore) {
@@ -62,10 +53,12 @@ export function findNodeAt(
   }
   return best;
 }
+
 export interface Neighborhood {
   nodes: Set<string>;
   edges: Set<string>;
 }
+
 export function neighborhoodOf(
   nodeId: string,
   edges: GraphEdge[],
@@ -94,6 +87,7 @@ export function neighborhoodOf(
   }
   return { nodes, edges: edgeIds };
 }
+
 export function edgesTouching(nodeId: string, edges: GraphEdge[]): GraphEdge[] {
   return edges.filter((edge) => edge.source === nodeId || edge.target === nodeId);
 }

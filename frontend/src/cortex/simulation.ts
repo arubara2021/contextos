@@ -1,8 +1,10 @@
 import type { GraphEdge, GraphNode } from "./types";
+
 export class ForceSimulation {
   private nodes: GraphNode[] = [];
   private reduced = false;
   private hovering = false;
+
   setData(nodes: GraphNode[], _edges: GraphEdge[]): void {
     this.nodes = nodes;
     for (const node of nodes) {
@@ -11,28 +13,34 @@ export class ForceSimulation {
       if (node.fx === undefined) node.fx = null;
       if (node.fy === undefined) node.fy = null;
       const kind = (node as { kind?: string }).kind;
-      if ((kind === "core" || kind === "document" || kind === "domain") && node.fx == null) {
+      if ((kind === "core" || kind === "document") && node.fx == null) {
         node.fx = node.x;
         node.fy = node.y;
       }
     }
   }
+
   setReducedMotion(value: boolean): void {
     this.reduced = value;
   }
+
   setHovering(value: boolean): void {
     this.hovering = value;
   }
+
   reheat(): void { }
+
   tick(dt: number): void {
     if (!this.reduced && !this.hovering) {
       this.drift(dt);
     }
   }
+
   private isStableNode(node: GraphNode): boolean {
     const kind = (node as { kind?: string }).kind;
-    return kind === "core" || kind === "document" || kind === "domain";
+    return kind === "core" || kind === "document";
   }
+
   private drift(dt: number): void {
     for (const node of this.nodes) {
       if (!node.orbitSpeed || node.held) continue;

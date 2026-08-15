@@ -89,13 +89,6 @@ function initializeNode(node: GraphNode): void {
     node.radius = docRadius(node);
     return;
   }
-  if ((node.kind ?? "concept") === "domain") {
-    const count = node.conceptCount ?? 0;
-    node.radius = Math.max(40, Math.min(72, 34 + count * 0.35));
-    node.boxWidth = node.radius * 2;
-    node.boxHeight = node.radius * 2;
-    return;
-  }
   node.radius = nodeRadius(node.importance);
 }
 
@@ -404,57 +397,6 @@ function coreLayout(nodes: GraphNode[]): void {
   }
 }
 
-function domainLayout(nodes: GraphNode[]): void {
-  const hubs = nodes.filter((node) => (node.kind ?? "concept") === "domain");
-  const concepts = nodes.filter((node) => (node.kind ?? "concept") === "concept");
-  if (hubs.length === 0) {
-    constellation(concepts);
-    return;
-  }
-  const expandedHub = hubs.find((hub) => hub.expanded) ?? null;
-  const sortedHubs = hubs
-    .slice()
-    .sort((a, b) => String(a.domain ?? "").localeCompare(String(b.domain ?? "")));
-  const hubCount = sortedHubs.length;
-  const hubRing = hubCount === 1 ? 0 : 520 + hubCount * 90;
-  sortedHubs.forEach((hub, i) => {
-    const cluster = `domain:${String(hub.domain ?? "general")}`;
-    if (expandedHub && hub === expandedHub) {
-      pin(hub, 0, 0);
-    } else if (expandedHub) {
-      const angle = -Math.PI / 2 + (i / Math.max(1, hubCount)) * TAU;
-      const radius = Math.max(900, 700 + concepts.length * 6);
-      pin(hub, Math.cos(angle) * radius, Math.sin(angle) * radius);
-    } else {
-      const angle =
-        hubCount === 1 ? -Math.PI / 2 : -Math.PI / 2 + (i / hubCount) * TAU;
-      pin(hub, Math.cos(angle) * hubRing, Math.sin(angle) * hubRing);
-    }
-    hub.clusterId = cluster;
-    hub.clusterCenterX = hub.x;
-    hub.clusterCenterY = hub.y;
-  });
-  if (expandedHub) {
-    const domainKey = String(expandedHub.domain ?? "general");
-    const members = concepts.filter(
-      (node) => String(node.domain ?? "general") === domainKey
-    );
-    packAroundCenter(0, 0, expandedHub.radius + 46, members, `domain:${domainKey}`);
-    return;
-  }
-  const byDomain = new Map<string, GraphNode[]>();
-  for (const node of concepts) {
-    const key = String(node.domain ?? "general");
-    if (!byDomain.has(key)) byDomain.set(key, []);
-    byDomain.get(key)!.push(node);
-  }
-  for (const hub of sortedHubs) {
-    const members = byDomain.get(String(hub.domain ?? "general")) ?? [];
-    if (members.length > 0) {
-      packAroundCenter(hub.x, hub.y, hub.radius + 40, members, `domain:${String(hub.domain ?? "general")}`);
-    }
-  }
-}
 function documentLayout(nodes: GraphNode[]): void {
   const active =
     nodes.find(
@@ -534,10 +476,6 @@ export function applyLayout(
   }
   if (mode === "document") {
     documentLayout(placed);
-    return;
-  }
-  if (mode === "domain") {
-    domainLayout(placed);
     return;
   }
   if (mode === "orbit") {

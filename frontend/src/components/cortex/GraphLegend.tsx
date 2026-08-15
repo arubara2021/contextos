@@ -160,3 +160,5 @@ export function GraphLegend({ variant = "inline", open = false, onClose }: Graph
     </>
   );
 }
+
+
