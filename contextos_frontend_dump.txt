@@ -1,1431 +1,647 @@
 ================================================================================
 CONTEXTOS FRONTEND CODE DUMP
 ================================================================================
-Total files: 3
+Total files: 4
 ================================================================================
 
 
 ================================================================================
-FILE: src/cortex/layouts.ts
+FILE: src/cortex/hitTest.ts
 ================================================================================
 
-import { CONCEPT_TYPE_ORDER, strengthCategory } from "../constants";
-import { nodeRadius } from "../utils/color";
-import type { CortexLayoutMode, GraphEdge, GraphNode } from "./types";
+import type { GraphEdge, GraphNode } from "./types";
 
-const TAU = Math.PI * 2;
-const GOLDEN = 2.399963229728653;
-const RING_LABELS = ["CORE", "FADING", "RIM"];
-const SLOT_GAP = 38;
-const CONCEPT_SLOT_GAP = 40;
-const DOC_SLOT_GAP = 82;
-const DESKTOP_DOC_WIDTH = 200;
-const DESKTOP_DOC_HEIGHT = 80;
-const MOBILE_DOC_WIDTH = 160;
-const MOBILE_DOC_HEIGHT = 64;
-const DEFAULT_CORE_RADIUS = 32;
-
-function isMobileViewport(): boolean {
-  return typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches;
+export interface HitTestOptions {
+  touch?: boolean;
 }
 
-function defaultDocWidth(): number {
-  return isMobileViewport() ? MOBILE_DOC_WIDTH : DESKTOP_DOC_WIDTH;
-}
-
-function defaultDocHeight(): number {
-  return isMobileViewport() ? MOBILE_DOC_HEIGHT : DESKTOP_DOC_HEIGHT;
-}
-
-function pin(node: GraphNode, x: number, y: number): void {
-  node.x = x;
-  node.y = y;
-  node.fx = x;
-  node.fy = y;
-}
-
-function clearLayoutVisuals(node: GraphNode): void {
-  node.clusterId = undefined;
-  node.clusterAnchor = undefined;
-  node.clusterCenterX = undefined;
-  node.clusterCenterY = undefined;
-  node.clusterRadius = undefined;
-  node.ring = undefined;
-  node.wedgeAngle = undefined;
-  node.wedgeLabel = undefined;
-  node.orbitAngle = undefined;
-  node.orbitRadius = undefined;
-  node.orbitSpeed = undefined;
-}
-
-function resetFields(node: GraphNode): void {
-  node.held = false;
-  clearLayoutVisuals(node);
-}
-
-function ringOf(node: GraphNode): number {
-  const cat = strengthCategory(node.strength);
-  if (cat === "strong") return 0;
-  if (cat === "fading") return 1;
-  return 2;
-}
-
-function presentTypes(nodes: GraphNode[]): string[] {
-  const set = new Set(nodes.map((n) => n.conceptType));
-  return CONCEPT_TYPE_ORDER.filter((t) => set.has(t));
-}
-
-function docWidth(node: GraphNode): number {
-  return node.boxWidth ?? defaultDocWidth();
-}
-
-function docHeight(node: GraphNode): number {
-  return node.boxHeight ?? defaultDocHeight();
-}
-
-function docRadius(node: GraphNode): number {
-  return Math.max(46, Math.hypot(docWidth(node), docHeight(node)) / 2.35);
-}
-
-function initializeNode(node: GraphNode): void {
-  if ((node.kind ?? "concept") === "core") {
-    node.radius = DEFAULT_CORE_RADIUS;
-    node.boxWidth = DEFAULT_CORE_RADIUS * 2;
-    node.boxHeight = DEFAULT_CORE_RADIUS * 2;
-    return;
-  }
-  if ((node.kind ?? "concept") === "document") {
-    node.boxWidth = defaultDocWidth();
-    node.boxHeight = defaultDocHeight();
-    node.radius = docRadius(node);
-    return;
-  }
-  node.radius = nodeRadius(node.importance);
-}
-
-function packCluster(
-  cx: number,
-  cy: number,
-  members: GraphNode[],
-  clusterId: string
-): void {
-  if (members.length === 0) return;
-  const avgR = members.reduce((sum, n) => sum + n.radius, 0) / members.length;
-  const slot = 2 * avgR + SLOT_GAP;
-  const anchor = members[0];
-  pin(anchor, cx, cy);
-  anchor.clusterAnchor = true;
-  anchor.clusterId = clusterId;
-  anchor.clusterCenterX = cx;
-  anchor.clusterCenterY = cy;
-  let ringRadius = anchor.radius + avgR + SLOT_GAP;
-  let ringIndex = 0;
-  const rest = members.slice(1);
-  while (rest.length > 0) {
-    const circumference = TAU * ringRadius;
-    const capacity = Math.max(1, Math.floor(circumference / slot));
-    const take = rest.splice(0, capacity);
-    const offset = ringIndex * GOLDEN;
-    for (let k = 0; k < take.length; k++) {
-      const ang = offset + ((k + 0.5) / take.length) * TAU;
-      const node = take[k];
-      pin(node, cx + Math.cos(ang) * ringRadius, cy + Math.sin(ang) * ringRadius);
-      node.clusterAnchor = false;
-      node.clusterId = clusterId;
-      node.clusterCenterX = cx;
-      node.clusterCenterY = cy;
-    }
-    ringRadius += slot;
-    ringIndex++;
-  }
-  const halo = ringRadius;
-  for (const node of members) node.clusterRadius = halo;
-}
-
-function packAroundCenter(
-  cx: number,
-  cy: number,
-  centerRadius: number,
-  members: GraphNode[],
-  clusterId: string
-): void {
-  if (members.length === 0) return;
-  const sorted = members.slice().sort((a, b) => b.importance - a.importance);
-  const avgR = sorted.reduce((sum, n) => sum + n.radius, 0) / sorted.length;
-  const slot = 2 * avgR + CONCEPT_SLOT_GAP;
-  let ringRadius = centerRadius + avgR + CONCEPT_SLOT_GAP;
-  let ringIndex = 0;
-  let rest = sorted.slice();
-  while (rest.length > 0) {
-    const circumference = TAU * ringRadius;
-    const capacity = Math.max(1, Math.floor(circumference / slot));
-    const take = rest.splice(0, capacity);
-    const offset = ringIndex * GOLDEN;
-    for (let k = 0; k < take.length; k++) {
-      const ang = offset + ((k + 0.5) / take.length) * TAU;
-      const node = take[k];
-      pin(node, cx + Math.cos(ang) * ringRadius, cy + Math.sin(ang) * ringRadius);
-      node.clusterAnchor = false;
-      node.clusterId = clusterId;
-      node.clusterCenterX = cx;
-      node.clusterCenterY = cy;
-    }
-    ringRadius += slot;
-    ringIndex++;
-  }
-}
-
-function packIslandGrid(cx: number, cy: number, members: GraphNode[]): void {
-  if (members.length === 0) return;
-  const sorted = members.slice().sort((a, b) => b.importance - a.importance);
-  const columns = Math.max(2, Math.ceil(Math.sqrt(sorted.length)));
-  const rows = Math.ceil(sorted.length / columns);
-  const cell = Math.max(...sorted.map((node) => node.radius * 2)) + 64;
-  sorted.forEach((node, index) => {
-    const col = index % columns;
-    const row = Math.floor(index / columns);
-    pin(
-      node,
-      cx + (col - (columns - 1) / 2) * cell,
-      cy + (row - (rows - 1) / 2) * cell
-    );
-    node.clusterId = "islands";
-    node.clusterCenterX = cx;
-    node.clusterCenterY = cy;
-  });
-}
-
-function relaxLinks(nodes: GraphNode[], edges: GraphEdge[]): void {
-  if (edges.length === 0) return;
-  const byId = new Map<string, GraphNode>();
-  const concepts: GraphNode[] = [];
-  for (const node of nodes) {
-    byId.set(node.id, node);
-    if ((node.kind ?? "concept") === "concept") concepts.push(node);
-  }
-  if (concepts.length === 0) return;
-
-  for (let pass = 0; pass < 3; pass++) {
-    for (const edge of edges) {
-      const a = byId.get(edge.source);
-      const b = byId.get(edge.target);
-      if (!a || !b || a === b) continue;
-      if ((a.kind ?? "concept") !== "concept" || (b.kind ?? "concept") !== "concept") continue;
-      const dx = b.x - a.x;
-      const dy = b.y - a.y;
-      const dist = Math.max(Math.hypot(dx, dy), 0.001);
-      const ideal = a.radius + b.radius + SLOT_GAP * 2.4;
-      if (dist <= ideal) continue;
-      const pull = (dist - ideal) * 0.16;
-      const ux = dx / dist;
-      const uy = dy / dist;
-      a.x += ux * pull;
-      a.y += uy * pull;
-      b.x -= ux * pull;
-      b.y -= uy * pull;
-    }
-    for (let i = 0; i < concepts.length; i++) {
-      const a = concepts[i];
-      for (let j = i + 1; j < concepts.length; j++) {
-        const b = concepts[j];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dist = Math.max(Math.hypot(dx, dy), 0.001);
-        const minDist = a.radius + b.radius + 16;
-        if (dist >= minDist) continue;
-        const push = (minDist - dist) / 2;
-        const ux = dx / dist;
-        const uy = dy / dist;
-        a.x -= ux * push;
-        a.y -= uy * push;
-        b.x += ux * push;
-        b.y += uy * push;
-      }
-    }
-  }
-
-  for (const node of concepts) {
-    if (!node.held) {
-      node.fx = node.x;
-      node.fy = node.y;
-    }
-  }
-}
-
-function constellation(nodes: GraphNode[], edges: GraphEdge[] = []): void {
-  const types = presentTypes(nodes);
-  const clusterCount = Math.max(1, types.length);
-  const clusterRing = 320 + clusterCount * 40;
-  const groups = new Map<string, GraphNode[]>();
-  for (const node of nodes) {
-    const list = groups.get(node.conceptType) ?? [];
-    list.push(node);
-    groups.set(node.conceptType, list);
-  }
-  types.forEach((type, i) => {
-    const members = (groups.get(type) ?? [])
-      .slice()
-      .sort((a, b) => b.importance - a.importance);
-    const angle = -Math.PI / 2 + (i / clusterCount) * TAU;
-    const cx = Math.cos(angle) * clusterRing;
-    const cy = Math.sin(angle) * clusterRing;
-    packCluster(cx, cy, members, type);
-  });
-  relaxLinks(nodes, edges);
-}
-
-function orbit(nodes: GraphNode[]): void {
-  const types = presentTypes(nodes);
-  const typeCount = Math.max(1, types.length);
-  const arcPerType = TAU / typeCount;
-  const usable = arcPerType * 0.78;
-  const base = 96 + nodes.length * 1.7;
-  const step = 70 + nodes.length * 0.6;
-  const ringRadiusFor = (r: number) => base + r * step;
-  const typeIndex = new Map(types.map((t, i) => [t, i]));
-  const buckets = new Map<string, GraphNode[]>();
-  for (const node of nodes) {
-    const key = `${node.conceptType}:${ringOf(node)}`;
-    const list = buckets.get(key) ?? [];
-    list.push(node);
-    buckets.set(key, list);
-  }
-  for (const [key, members] of buckets) {
-    const sep = key.lastIndexOf(":");
-    const type = key.substring(0, sep);
-    const ring = Number(key.substring(sep + 1));
-    const ac = -Math.PI / 2 + (typeIndex.get(type) ?? 0) * arcPerType;
-    const sorted = members.slice().sort((a, b) => b.importance - a.importance);
-    const avgR = sorted.reduce((sum, n) => sum + n.radius, 0) / sorted.length;
-    const slot = 2 * avgR + SLOT_GAP;
-    let subRing = 0;
-    let radius = ringRadiusFor(ring);
-    while (sorted.length > 0) {
-      const arcLen = usable * radius;
-      const capacity = Math.max(1, Math.floor(arcLen / slot));
-      const take = sorted.splice(0, capacity);
-      for (let k = 0; k < take.length; k++) {
-        const frac = (k + 0.5) / take.length;
-        const ang = ac - usable / 2 + usable * frac;
-        const node = take[k];
-        pin(node, Math.cos(ang) * radius, Math.sin(ang) * radius);
-        node.ring = ring;
-        node.wedgeAngle = ac;
-        node.wedgeLabel = type;
-        node.orbitRadius = radius;
-        node.orbitAngle = ang;
-        node.orbitSpeed = 0.045 / (ring + 1 + subRing * 0.6);
-      }
-      subRing++;
-      radius += slot;
-    }
-  }
-}
-
-function timeline(nodes: GraphNode[]): void {
-  const labelPx = 150;
-  const maxDiam = nodes.reduce((m, n) => Math.max(m, 2 * n.radius), 0);
-  const pitchX = Math.max(maxDiam, labelPx) + 30;
-  const pitchY = Math.max(maxDiam, 64) + 40;
-  const count = nodes.length;
-  const cols = Math.max(1, Math.round(Math.sqrt(count * (pitchX / pitchY))));
-  const rows = Math.max(1, Math.ceil(count / cols));
-  const ordered = nodes.slice().sort((a, b) => a.createdAt - b.createdAt);
-  ordered.forEach((node, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    pin(
-      node,
-      (col - (cols - 1) / 2) * pitchX,
-      (row - (rows - 1) / 2) * pitchY
-    );
-  });
-}
-
-function coreLayout(nodes: GraphNode[]): void {
-  const coreNode = nodes.find((node) => (node.kind ?? "concept") === "core");
-  const documents = nodes.filter((node) => (node.kind ?? "concept") === "document");
-  const concepts = nodes.filter((node) => (node.kind ?? "concept") === "concept");
-  if (coreNode) {
-    pin(coreNode, 0, 0);
-    coreNode.clusterId = "core";
-    coreNode.clusterCenterX = 0;
-    coreNode.clusterCenterY = 0;
-  }
-  if (documents.length > 0) {
-    const sorted = documents
-      .slice()
-      .sort(
-        (a, b) =>
-          (b.conceptCount ?? 0) - (a.conceptCount ?? 0) ||
-          a.label.localeCompare(b.label)
-      );
-    let placed = 0;
-    let ring = 0;
-    while (placed < sorted.length) {
-      const radius = 220 + ring * 190;
-      const remaining = sorted.slice(placed);
-      const maxSlot = Math.max(...remaining.map(docWidth)) + DOC_SLOT_GAP;
-      const capacity = Math.max(3, Math.floor((TAU * radius) / maxSlot));
-      const take = remaining.slice(0, capacity);
-      for (let i = 0; i < take.length; i++) {
-        const angle =
-          -Math.PI / 2 + ring * GOLDEN + ((i + 0.5) / take.length) * TAU;
-        pin(take[i], Math.cos(angle) * radius, Math.sin(angle) * radius);
-        take[i].clusterId = "core-documents";
-        take[i].clusterCenterX = 0;
-        take[i].clusterCenterY = 0;
-      }
-      placed += take.length;
-      ring += 1;
-    }
-  }
-  if (concepts.length > 0) {
-    if (!coreNode && documents.length === 0) {
-      constellation(concepts);
-      return;
-    }
-    const outer = 260 + Math.ceil(documents.length / 6) * 190 + 240;
-    packCluster(0, outer, concepts, "core-concepts");
-  }
-}
-
-function documentLayout(nodes: GraphNode[]): void {
-  const active =
-    nodes.find(
-      (node) => (node.kind ?? "concept") === "document" && node.expanded
-    ) ?? nodes.find((node) => (node.kind ?? "concept") === "document");
-  const concepts = nodes.filter((node) => (node.kind ?? "concept") === "concept");
-  const otherDocuments = nodes.filter(
-    (node) => (node.kind ?? "concept") === "document" && node !== active
-  );
-  if (active) {
-    pin(active, 0, 0);
-    active.expanded = true;
-    active.clusterId = "document-root";
-    active.clusterCenterX = 0;
-    active.clusterCenterY = 0;
-  }
-  const linked = concepts.filter((node) => !node.island);
-  const islands = concepts.filter((node) => node.island);
-  const centerX = active?.x ?? 0;
-  const centerY = active?.y ?? 0;
-  const centerRadius = active ? active.radius + 38 : 130;
-  if (linked.length > 0) {
-    packAroundCenter(
-      centerX,
-      centerY,
-      centerRadius,
-      linked,
-      active?.id ?? "document-concepts"
-    );
-  }
-  if (islands.length > 0) {
-    packIslandGrid(
-      centerX + (active ? docWidth(active) : 220) + 380,
-      centerY,
-      islands
-    );
-  }
-  if (otherDocuments.length > 0) {
-    const radius = Math.max(
-      640,
-      centerRadius + linked.length * 26 + islands.length * 20
-    );
-    otherDocuments.forEach((node, index) => {
-      const angle =
-        -Math.PI / 2 + (index / Math.max(1, otherDocuments.length)) * TAU;
-      pin(node, Math.cos(angle) * radius, Math.sin(angle) * radius);
-      node.clusterId = "document-bridges";
-      node.clusterCenterX = centerX;
-      node.clusterCenterY = centerY;
-    });
-  }
-  if (!active && concepts.length > 0) {
-    constellation(concepts);
-  }
-}
-
-export function applyLayout(
+export function findNodeAt(
   nodes: GraphNode[],
-  mode: CortexLayoutMode,
-  edges: GraphEdge[] = []
-): void {
-  if (nodes.length === 0) return;
-  const placed: GraphNode[] = [];
+  wx: number,
+  wy: number,
+  zoom: number,
+  options: HitTestOptions = {}
+): GraphNode | null {
+  const baseSlack = options.touch ? 24 : 8;
+  const slack = baseSlack / zoom;
+  let best: GraphNode | null = null;
+  let bestScore = Infinity;
   for (const node of nodes) {
-    initializeNode(node);
-    if (node.held) {
-      clearLayoutVisuals(node);
-    } else {
-      resetFields(node);
-      placed.push(node);
-    }
-  }
-  if (placed.length === 0) return;
-  if (mode === "core") {
-    coreLayout(placed);
-    return;
-  }
-  if (mode === "document") {
-    documentLayout(placed);
-    return;
-  }
-  if (mode === "orbit") {
-    orbit(placed);
-    return;
-  }
-  if (mode === "timeline") {
-    timeline(placed);
-    return;
-  }
-  constellation(placed, edges);
-}
-
-export { RING_LABELS };
-export function applySmartLayout(
-  nodes: GraphNode[],
-  width: number,
-  height: number
-): void {
-  if (nodes.length === 0) return;
-
-  const conceptNodes = nodes.filter((n) => (n.kind ?? "concept") === "concept");
-  const docNodes = nodes.filter((n) => (n.kind ?? "concept") === "document");
-  const coreNodes = nodes.filter((n) => (n.kind ?? "concept") === "core");
-
-  if (conceptNodes.length === 0 && docNodes.length === 0) return;
-
-  const maxDim = Math.max(width, height);
-  const baseSpacing = Math.max(80, maxDim / Math.max(8, Math.sqrt(nodes.length) * 1.2));
-
-  const byType = new Map<string, GraphNode[]>();
-  for (const node of conceptNodes) {
-    const type = node.conceptType ?? "unknown";
-    if (!byType.has(type)) byType.set(type, []);
-    byType.get(type)!.push(node);
-  }
-
-  for (const [, group] of byType) {
-    group.sort((a, b) => b.importance - a.importance);
-  }
-
-  const sortedTypes = [...byType.entries()].sort((a, b) => {
-    const aMax = a[1][0]?.importance ?? 0;
-    const bMax = b[1][0]?.importance ?? 0;
-    return bMax - aMax;
-  });
-
-  const totalNodes = conceptNodes.length + docNodes.length;
-  const layoutRadius = baseSpacing * Math.max(2, Math.sqrt(totalNodes) * 0.7);
-
-  for (const core of coreNodes) {
-    core.x = 0;
-    core.y = 0;
-    core.fx = 0;
-    core.fy = 0;
-  }
-
-  if (docNodes.length > 0) {
-    const docRingRadius = layoutRadius * 0.4;
-    docNodes.forEach((node, i) => {
-      const angle = (i / docNodes.length) * Math.PI * 2 - Math.PI / 2;
-      node.x = Math.cos(angle) * docRingRadius;
-      node.y = Math.sin(angle) * docRingRadius;
-      node.fx = node.x;
-      node.fy = node.y;
-    });
-  }
-
-  const typeAngleMap = new Map<string, { startAngle: number; endAngle: number }>();
-  const totalWeight = sortedTypes.reduce((sum, [, group]) => sum + group.length, 0);
-  let currentAngle = -Math.PI / 2;
-  const gapAngle = 0.15;
-
-  for (const [type, group] of sortedTypes) {
-    const share = group.length / totalWeight;
-    const sweep = share * Math.PI * 2 - gapAngle;
-    typeAngleMap.set(type, {
-      startAngle: currentAngle,
-      endAngle: currentAngle + Math.max(sweep, 0.3),
-    });
-    currentAngle += share * Math.PI * 2;
-  }
-
-  for (const [type, group] of sortedTypes) {
-    const angles = typeAngleMap.get(type)!;
-    const count = group.length;
-    const isSmall = count <= 3;
-
-    const importanceSum = group.reduce((s, n) => s + n.importance, 0) || 1;
-    const importanceNorm = group.map((n) => n.importance / importanceSum);
-
-    if (isSmall) {
-      group.forEach((node, i) => {
-        const t = count === 1 ? 0.5 : i / (count - 1);
-        const angle = angles.startAngle + t * (angles.endAngle - angles.startAngle);
-        const minR = layoutRadius * 0.5;
-        const maxR = layoutRadius * 0.85;
-        const r = minR + (1 - importanceNorm[i]) * (maxR - minR);
-        node.x = Math.cos(angle) * r;
-        node.y = Math.sin(angle) * r;
-        node.fx = null;
-        node.fy = null;
-      });
-    } else {
-      const rings: GraphNode[][] = [];
-      let remaining = [...group];
-      let ringIndex = 0;
-      while (remaining.length > 0) {
-        const ringCapacity = Math.max(6, Math.floor(8 + ringIndex * 5));
-        rings.push(remaining.slice(0, ringCapacity));
-        remaining = remaining.slice(ringCapacity);
-        ringIndex++;
-      }
-
-      rings.forEach((ring, ri) => {
-        const rMin = layoutRadius * (0.45 + ri * 0.35);
-        const rMax = layoutRadius * (0.45 + (ri + 1) * 0.35);
-        ring.forEach((node, i) => {
-          const t = ring.length === 1 ? 0.5 : i / (ring.length - 1);
-          const angle = angles.startAngle + t * (angles.endAngle - angles.startAngle);
-          const r = rMin + (1 - (node.importance / 10)) * (rMax - rMin);
-          node.x = Math.cos(angle) * r;
-          node.y = Math.sin(angle) * r;
-          node.fx = null;
-          node.fy = null;
-        });
-      });
-    }
-  }
-
-  resolveCollisions(nodes, baseSpacing * 0.6);
-}
-
-function resolveCollisions(nodes: GraphNode[], minDist: number): void {
-  const iterations = 40;
-  const conceptNodes = nodes.filter((n) => (n.kind ?? "concept") === "concept");
-  for (let iter = 0; iter < iterations; iter++) {
-    let moved = false;
-    for (let i = 0; i < conceptNodes.length; i++) {
-      for (let j = i + 1; j < conceptNodes.length; j++) {
-        const a = conceptNodes[i];
-        const b = conceptNodes[j];
-        const dx = b.x - a.x;
-        const dy = b.y - a.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const needed = minDist + (a.radius || 12) + (b.radius || 12);
-        if (dist < needed && dist > 0.01) {
-          const overlap = (needed - dist) / 2;
-          const nx = dx / dist;
-          const ny = dy / dist;
-          if (!a.held && a.fx == null) {
-            a.x -= nx * overlap * 0.5;
-            a.y -= ny * overlap * 0.5;
-          }
-          if (!b.held && b.fx == null) {
-            b.x += nx * overlap * 0.5;
-            b.y += ny * overlap * 0.5;
-          }
-          moved = true;
-        }
-      }
-    }
-    if (!moved) break;
-  }
-}
-
-
-================================================================================
-FILE: src/hooks/useCortexMap.ts
-================================================================================
-
-import { useCallback, useEffect, useState } from "react";
-import { api } from "../api";
-import type { CortexMapResponse } from "../api";
-
-export function useCortexMap() {
-    const [data, setData] = useState<CortexMapResponse | null>(null);
-    const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
-
-    const refetch = useCallback(async () => {
-        setLoading(true);
-        setError(null);
-
-        try {
-            const result = await api.cortex.map();
-            setData(result);
-        } catch (err) {
-            setError(err instanceof Error ? err.message : "Failed to load Cortex map");
-            setData(null);
-        } finally {
-            setLoading(false);
-        }
-    }, []);
-
-    useEffect(() => {
-        void refetch();
-    }, [refetch]);
-
-    return {
-        data,
-        loading,
-        error,
-        refetch,
-    };
-}
-
-
-================================================================================
-FILE: src/components/cortex/CortexCanvas.tsx
-================================================================================
-
-import { useEffect, useRef } from "react";
-import type {
-  MouseEvent as CanvasMouseEvent,
-  PointerEvent as CanvasPointerEvent,
-} from "react";
-import { Camera } from "../../cortex/camera";
-import type { FitInsets } from "../../cortex/camera";
-import { ForceSimulation } from "../../cortex/simulation";
-import { SignalSystem } from "../../cortex/signals";
-import { CortexRenderer } from "../../cortex/renderer";
-import { applyLayout } from "../../cortex/layouts";
-import { findNodeAt, edgesTouching } from "../../cortex/hitTest";
-import { buildScene } from "../../cortex/types";
-import type {
-  CortexLayoutMode,
-  GraphEdge,
-  GraphNode,
-  LayoutMode,
-  Scene,
-} from "../../cortex/types";
-import { ScanlineOverlay } from "./ScanlineOverlay";
-
-interface CortexCanvasProps {
-  nodes: GraphNode[];
-  edges: GraphEdge[];
-  layout: LayoutMode;
-  sceneMode?: "core" | "document" | "graph";
-  highlightedIds: string[];
-  selectedId: string | null;
-  focusedId: string | null;
-  pulseIds: string[];
-  retrieving: boolean;
-  panelsHidden?: boolean;
-  fitSignal?: number;
-  drawerOpen?: boolean;
-  sheetOpen?: boolean;
-  onCoreClick?: () => void;
-  onDocumentClick?: (node: GraphNode) => void;
-  onDocumentOpen?: (node: GraphNode) => void;
-  onConceptClick?: (node: GraphNode) => void;
-  onNodeClick?: (node: GraphNode) => void;
-  onBackgroundClick: () => void;
-}
-
-interface EngineBundle {
-  simulation: ForceSimulation;
-  camera: Camera;
-  signals: SignalSystem;
-  renderer: CortexRenderer;
-}
-
-interface PointerPoint {
-  x: number;
-  y: number;
-}
-
-interface RailQueueItem {
-  edgeId: string;
-  at: number;
-  reverse: boolean;
-  speed: number;
-  color?: string;
-}
-
-function computeInsets(
-  width: number,
-  drawerOpen: boolean,
-  sheetOpen: boolean
-): FitInsets {
-  if (width < 768) {
-    return {
-      left: 14,
-      right: 14,
-      top: 108,
-      bottom: sheetOpen ? 280 : 80,
-    };
-  }
-  return {
-    left: 26,
-    right: drawerOpen ? 420 : 26,
-    top: 118,
-    bottom: 92,
-  };
-}
-
-const TOUCH_TAP_THRESHOLD = 8;
-const MOUSE_TAP_THRESHOLD = 3;
-const TOUCH_TAP_TIME = 550;
-const MOUSE_TAP_TIME = 400;
-
-
-
-
-export function CortexCanvas(props: CortexCanvasProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const engineRef = useRef<EngineBundle | null>(null);
-  const sceneRef = useRef<Scene>({ nodes: [], edges: [], nodeById: new Map() });
-  const sizeRef = useRef({ width: 0, height: 0, dpr: 1 });
-  const hoverRef = useRef<{ nodeId: string; x: number; y: number } | null>(
-    null
-  );
-  const layoutRef = useRef<LayoutMode>(props.layout);
-  const sceneModeRef = useRef<"core" | "document" | "graph">(
-    props.sceneMode ?? "graph"
-  );
-  const structureRef = useRef("");
-  const hasInitialFitRef = useRef(false);
-  const reducedRef = useRef(false);
-  const railQueueRef = useRef<RailQueueItem[]>([]);
-  const pointersRef = useRef<Map<number, PointerPoint>>(new Map());
-  const pinchRef = useRef<{
-    dist: number;
-    cx: number;
-    cy: number;
-    angle: number;
-  } | null>(null);
-  const downRef = useRef<{
-    x: number;
-    y: number;
-    t: number;
-    node: GraphNode | null;
-    moved: boolean;
-    touch: boolean;
-  } | null>(null);
-  const lastSingleRef = useRef<PointerPoint | null>(null);
-  const dragNodeRef = useRef<GraphNode | null>(null);
-  const grabHadPinRef = useRef(false);
-  const grabWasHeldRef = useRef(false);
-  const grabScreenRef = useRef<PointerPoint>({ x: 0, y: 0 });
-  const grabWorldRef = useRef<PointerPoint>({ x: 0, y: 0 });
-  const refitRef = useRef<() => void>(() => { });
-  const propsRef = useRef(props);
-  propsRef.current = props;
-
-  useEffect(() => {
-    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const apply = () => {
-      reducedRef.current = mq.matches;
-      engineRef.current?.simulation.setReducedMotion(mq.matches);
-    };
-    apply();
-    mq.addEventListener?.("change", apply);
-    return () => mq.removeEventListener?.("change", apply);
-  }, []);
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-    const handler = (e: TouchEvent) => {
-      e.preventDefault();
-    };
-    canvas.addEventListener("touchstart", handler, { passive: false });
-    return () => {
-      canvas.removeEventListener("touchstart", handler);
-    };
-  }, []);
-
-  const applyCurrentLayout = () => {
-    const mode: CortexLayoutMode =
-      sceneModeRef.current === "core"
-        ? "core"
-        : sceneModeRef.current === "document"
-          ? "document"
-          : layoutRef.current;
-    applyLayout(sceneRef.current.nodes, mode);
-  };
-
-  const fireRails = (nodeId: string) => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    const touching = edgesTouching(nodeId, sceneRef.current.edges)
-      .slice()
-      .sort((a, b) => b.confidence - a.confidence)
-      .slice(0, 14);
-    if (touching.length === 0) return;
-    const now = performance.now();
-    touching.forEach((edge, index) => {
-      const outward = edge.source === nodeId;
-      railQueueRef.current.push({
-        edgeId: edge.id,
-        at: now + index * 70,
-        reverse: !outward,
-        speed: 1.15 + Math.random() * 0.45,
-      });
-      railQueueRef.current.push({
-        edgeId: edge.id,
-        at: now + 520 + index * 70,
-        reverse: outward,
-        speed: 0.72,
-        color: "rgba(196, 239, 235, 0.85)",
-      });
-    });
-    if (railQueueRef.current.length > 80) {
-      railQueueRef.current = railQueueRef.current.slice(-80);
-    }
-  };
-
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    const container = containerRef.current;
-    if (!canvas || !container) return;
-    const context = canvas.getContext("2d");
-    if (!context) return;
-    const renderer = new CortexRenderer(context);
-    const simulation = new ForceSimulation();
-    const camera = new Camera();
-    const signals = new SignalSystem();
-    simulation.setReducedMotion(reducedRef.current);
-    engineRef.current = { simulation, camera, signals, renderer };
-    const resize = () => {
-      const rect = container.getBoundingClientRect();
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
-      sizeRef.current = { width: rect.width, height: rect.height, dpr };
-      canvas.width = Math.max(1, Math.round(rect.width * dpr));
-      canvas.height = Math.max(1, Math.round(rect.height * dpr));
-      refitRef.current();
-    };
-    refitRef.current = () => {
-      const scene = sceneRef.current;
-      if (scene.nodes.length === 0) return;
-      const { width, height } = sizeRef.current;
-      const current = propsRef.current;
-      engineRef.current?.camera.fit(
-        scene.nodes,
-        width,
-        height,
-        computeInsets(
-          width,
-          current.drawerOpen ?? false,
-          current.sheetOpen ?? false
-        )
-      );
-    };
-    resize();
-    const observer = new ResizeObserver(resize);
-    observer.observe(container);
-    window.addEventListener("resize", resize);
-    const onWheelNative = (event: WheelEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      const rect = canvas.getBoundingClientRect();
-      const ox = event.clientX - rect.left;
-      const oy = event.clientY - rect.top;
-      const { width, height } = sizeRef.current;
-      camera.zoomByWheel(ox, oy, event.deltaY, width, height);
-    };
-    canvas.addEventListener("wheel", onWheelNative, { passive: false });
-    let frame = 0;
-    let last = performance.now();
-    const loop = (now: number) => {
-      const dt = Math.min((now - last) / 1000, 0.05);
-      last = now;
-      const { width, height, dpr } = sizeRef.current;
-      simulation.setHovering(hoverRef.current != null);
-      simulation.tick(dt);
-      camera.update(dt);
-      signals.update(dt);
-      if (railQueueRef.current.length > 0) {
-        const ready = railQueueRef.current.filter((item) => item.at <= now);
-        if (ready.length > 0) {
-          railQueueRef.current = railQueueRef.current.filter(
-            (item) => item.at > now
-          );
-          for (const item of ready) {
-            signals.spawn(item.edgeId, {
-              reverse: item.reverse,
-              speed: item.speed,
-              color: item.color,
-            });
-          }
-        }
-      }
-      const current = propsRef.current;
-      const highlighted = new Set(current.highlightedIds);
-      renderer.render(
-        sceneRef.current,
-        camera,
-        signals,
-        {
-          layout: current.layout,
-          reducedMotion: reducedRef.current,
-          highlightedIds: highlighted,
-          selectedId: current.selectedId,
-          focusedId: current.focusedId,
-          retrieving: current.retrieving,
-          pulseIds: new Set(current.pulseIds),
-          hover: hoverRef.current,
-          showLabels: true,
-          time: now,
-          dpr,
-        },
-        width,
-        height
-      );
-      frame = requestAnimationFrame(loop);
-    };
-    frame = requestAnimationFrame(loop);
-    return () => {
-      cancelAnimationFrame(frame);
-      observer.disconnect();
-      window.removeEventListener("resize", resize);
-      canvas.removeEventListener("wheel", onWheelNative);
-      engineRef.current = null;
-    };
-  }, []);
-
-  useEffect(() => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    const scene = buildScene(props.nodes, props.edges);
-    const oldById = sceneRef.current.nodeById;
-    for (const node of scene.nodes) {
-      const old = oldById.get(node.id);
-      if (!old) continue;
-      node.x = old.x;
-      node.y = old.y;
-      node.fx = old.fx;
-      node.fy = old.fy;
-      node.held = old.held;
-      node.orbitAngle = old.orbitAngle;
-      node.orbitRadius = old.orbitRadius;
-      node.orbitSpeed = old.orbitSpeed;
-    }
-    sceneRef.current = scene;
-    engine.simulation.setData(scene.nodes, scene.edges);
-    engine.signals.setEdges(scene.edges);
-    const structure = `${scene.nodes
-      .map((node) => node.id)
-      .join("|")}@@${scene.edges.map((edge) => edge.id).join("|")}`;
-    if (structure !== structureRef.current) {
-      structureRef.current = structure;
-      railQueueRef.current = [];
-      applyCurrentLayout();
-    }
-    if (!hasInitialFitRef.current && scene.nodes.length > 0) {
-      hasInitialFitRef.current = true;
-      const { width, height } = sizeRef.current;
-      const current = propsRef.current;
-      const focusNode = current.focusedId
-        ? scene.nodeById.get(current.focusedId)
-        : undefined;
-      const insets = computeInsets(
-        width,
-        current.drawerOpen ?? false,
-        current.sheetOpen ?? false
-      );
-      if (focusNode) {
-        if ((focusNode.kind ?? "concept") === "concept") {
-          engine.camera.focusOn(focusNode, 1.5);
-        } else {
-          engine.camera.focusNode(focusNode, width, height, insets, 0.55);
-        }
-      } else {
-        engine.camera.fit(scene.nodes, width, height, insets);
-      }
-    }
-  }, [props.nodes, props.edges]);
-
-  useEffect(() => {
-    layoutRef.current = props.layout;
-    sceneModeRef.current = props.sceneMode ?? "graph";
-    const engine = engineRef.current;
-    if (!engine || sceneRef.current.nodes.length === 0) return;
-    for (const node of sceneRef.current.nodes) {
-      node.held = false;
-      node.fx = null;
-      node.fy = null;
-    }
-    applyCurrentLayout();
-    const { width, height } = sizeRef.current;
-    engine.camera.fit(
-      sceneRef.current.nodes,
-      width,
-      height,
-      computeInsets(
-        width,
-        props.drawerOpen ?? false,
-        props.sheetOpen ?? false
-      )
-    );
-  }, [props.layout, props.sceneMode]);
-
-  useEffect(() => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    if (!props.focusedId) return;
-    const node = sceneRef.current.nodeById.get(props.focusedId);
-    if (!node) return;
-    const { width, height } = sizeRef.current;
-    const insets = computeInsets(
-      width,
-      props.drawerOpen ?? false,
-      props.sheetOpen ?? false
-    );
-    if ((node.kind ?? "concept") === "concept") {
-      engine.camera.focusOn(node, 1.6);
-    } else {
-      engine.camera.focusNode(node, width, height, insets, 0.55);
-    }
-    fireRails(node.id);
-  }, [props.focusedId]);
-
-  useEffect(() => {
-    refitRef.current();
-  }, [props.fitSignal]);
-
-  const pickNode = (
-    ox: number,
-    oy: number,
-    touch: boolean
-  ): GraphNode | null => {
-    const engine = engineRef.current;
-    if (!engine) return null;
-    const { width, height } = sizeRef.current;
-    const world = engine.camera.screenToWorld(ox, oy, width, height);
-    return findNodeAt(
-      sceneRef.current.nodes,
-      world.x,
-      world.y,
-      engine.camera.zoom,
-      { touch }
-    );
-  };
-
-  const pointerDist = (): { dist: number; cx: number; cy: number; angle: number } | null => {
-    const points = [...pointersRef.current.values()];
-    if (points.length < 2) return null;
-    const dx = points[0].x - points[1].x;
-    const dy = points[0].y - points[1].y;
-    return {
-      dist: Math.hypot(dx, dy),
-      cx: (points[0].x + points[1].x) / 2,
-      cy: (points[0].y + points[1].y) / 2,
-      angle: Math.atan2(dy, dx),
-    };
-  };
-
-  const releaseDrag = () => {
-    const drag = dragNodeRef.current;
-    if (!drag) return;
-    drag.held = grabWasHeldRef.current;
-    if (!grabHadPinRef.current) {
-      drag.fx = null;
-      drag.fy = null;
-    }
-    dragNodeRef.current = null;
-  };
-
-  const startConceptDrag = (node: GraphNode, ox: number, oy: number) => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    dragNodeRef.current = node;
-    grabHadPinRef.current = node.fx != null;
-    grabWasHeldRef.current = Boolean(node.held);
-    grabScreenRef.current = { x: ox, y: oy };
-    grabWorldRef.current = { x: node.x, y: node.y };
-    node.held = true;
-    node.fx = node.x;
-    node.fy = node.y;
-    hoverRef.current = null;
-    if (canvasRef.current) canvasRef.current.style.cursor = "grabbing";
-  };
-
-  const handleNodeTap = (node: GraphNode, _touch: boolean) => {
-    console.log("3-NODE_TAP", node.id, node.label, node.kind);
-    const current = propsRef.current;
     const kind = node.kind ?? "concept";
-    fireRails(node.id);
-    if (kind === "core") {
-      if (current.onCoreClick) current.onCoreClick();
-      else current.onNodeClick?.(node);
-      return;
-    }
+    const dx = wx - node.x;
+    const dy = wy - node.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
     if (kind === "document") {
-      if (current.selectedId === node.id && current.onDocumentOpen) {
-        current.onDocumentOpen(node);
-        return;
-      }
-      if (current.onDocumentClick) current.onDocumentClick(node);
-      else current.onNodeClick?.(node);
-      return;
-    }
-    if (current.onConceptClick) current.onConceptClick(node);
-    else current.onNodeClick?.(node);
-  };
-
-  const handlePointerDown = (
-    event: CanvasPointerEvent<HTMLCanvasElement>
-  ) => {
-    console.log("1-POINTER_DOWN", event.pointerType, event.clientX, event.clientY);
-    const engine = engineRef.current;
-    if (!engine) return;
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const rect = (event.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-    const ox = event.clientX - rect.left;
-    const oy = event.clientY - rect.top;
-    const touch = event.pointerType === "touch";
-    pointersRef.current.set(event.pointerId, { x: ox, y: oy });
-    lastSingleRef.current = { x: ox, y: oy };
-    if (pointersRef.current.size === 2) {
-      pinchRef.current = pointerDist();
-      downRef.current = null;
-      releaseDrag();
-      return;
-    }
-
-    const node = pickNode(ox, oy, touch);
-    console.log("2-PICK_RESULT", node?.id ?? "NULL", "screen:", ox, oy, "world:", engine.camera.screenToWorld(ox, oy, sizeRef.current.width, sizeRef.current.height), "size:", sizeRef.current.width, sizeRef.current.height, "zoom:", engine.camera.zoom);
-    downRef.current = {
-      x: ox,
-      y: oy,
-      t: performance.now(),
-      node,
-      moved: false,
-      touch,
-    };
-    dragNodeRef.current = null;
-    if (node) {
-      hoverRef.current = null;
-      if (canvasRef.current) canvasRef.current.style.cursor = "pointer";
-    }
-  };
-
-  const handlePointerMove = (
-    event: CanvasPointerEvent<HTMLCanvasElement>
-  ) => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    const rect = (event.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-    const ox = event.clientX - rect.left;
-    const oy = event.clientY - rect.top;
-    const { width, height } = sizeRef.current;
-    if (pointersRef.current.has(event.pointerId)) {
-      pointersRef.current.set(event.pointerId, { x: ox, y: oy });
-    }
-    if (pointersRef.current.size >= 2) {
-      const current = pointerDist();
-      const previous = pinchRef.current;
-      if (current && previous) {
-        const rawFactor = current.dist / (previous.dist || 1);
-        const factor = 1 + (rawFactor - 1) * 0.7;
-        engine.camera.zoomAt(
-          current.cx,
-          current.cy,
-          factor,
-          width,
-          height
-        );
-        engine.camera.panBy(
-          (current.cx - previous.cx) * 0.6,
-          (current.cy - previous.cy) * 0.6
-        );
-        let angleDelta = current.angle - previous.angle;
-        if (angleDelta > Math.PI) angleDelta -= Math.PI * 2;
-        if (angleDelta < -Math.PI) angleDelta += Math.PI * 2;
-        engine.camera.rotateBy(angleDelta);
-      }
-      pinchRef.current = current;
-      if (downRef.current) downRef.current.moved = true;
-      releaseDrag();
-      return;
-    }
-    const drag = dragNodeRef.current;
-    if (drag) {
-      const world = engine.camera.screenToWorld(ox, oy, width, height);
-      drag.held = true;
-      drag.x = world.x;
-      drag.y = world.y;
-      drag.fx = world.x;
-      drag.fy = world.y;
-      lastSingleRef.current = { x: ox, y: oy };
-      return;
-    }
-    const down = downRef.current;
-    if (down?.node && (down.node.kind ?? "concept") === "concept" && !down.moved) {
-      const dsx = ox - down.x;
-      const dsy = oy - down.y;
-      const threshold = down.touch ? TOUCH_TAP_THRESHOLD : MOUSE_TAP_THRESHOLD;
-      if (Math.abs(dsx) + Math.abs(dsy) > threshold) {
-        down.moved = true;
-        startConceptDrag(down.node, down.x, down.y);
-        const world = engine.camera.screenToWorld(ox, oy, width, height);
-        down.node.x = world.x;
-        down.node.y = world.y;
-        down.node.fx = world.x;
-        down.node.fy = world.y;
-      }
-      lastSingleRef.current = { x: ox, y: oy };
-      return;
-    }
-    const pressing =
-      event.buttons !== 0 || event.pointerType === "touch";
-    if (pressing) {
-      const last = lastSingleRef.current;
-      if (last) {
-        const dx = ox - last.x;
-        const dy = oy - last.y;
-        const moveThreshold = down?.touch ? TOUCH_TAP_THRESHOLD : MOUSE_TAP_THRESHOLD;
-        if (Math.abs(dx) + Math.abs(dy) > moveThreshold) {
-          if (down) down.moved = true;
-          engine.camera.panBy(dx, dy);
+      const halfW = (node.boxWidth ?? 188) / 2 + slack;
+      const halfH = (node.boxHeight ?? 72) / 2 + slack;
+      if (Math.abs(dx) <= halfW && Math.abs(dy) <= halfH) {
+        const score = dist;
+        if (score < bestScore) {
+          best = node;
+          bestScore = score;
         }
       }
-      lastSingleRef.current = { x: ox, y: oy };
-      return;
+      continue;
     }
-    const node = pickNode(ox, oy, false);
-    hoverRef.current = node
-      ? { nodeId: node.id, x: ox, y: oy }
-      : null;
-    if (canvasRef.current) {
-      canvasRef.current.style.cursor = node ? "pointer" : "grab";
-    }
-  };
-
-  const endPointer = (
-    event: CanvasPointerEvent<HTMLCanvasElement>
-  ) => {
-    pointersRef.current.delete(event.pointerId);
-    if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (pointersRef.current.size === 1) {
-      const remaining = [...pointersRef.current.values()][0];
-      lastSingleRef.current = { ...remaining };
-    }
-    if (pointersRef.current.size !== 0) return;
-    const down = downRef.current;
-    downRef.current = null;
-    lastSingleRef.current = null;
-    const drag = dragNodeRef.current;
-    dragNodeRef.current = null;
-    if (canvasRef.current) canvasRef.current.style.cursor = "grab";
-    if (drag) {
-      if (down?.moved) {
-        drag.held = true;
-        hoverRef.current = null;
-      } else {
-        drag.held = grabWasHeldRef.current;
-        if (!grabHadPinRef.current) {
-          drag.fx = null;
-          drag.fy = null;
+    if (kind === "core") {
+      const radius = Math.max(node.radius || 32, 30) + 20;
+      if (dist <= radius + slack) {
+        const score = dist - 6;
+        if (score < bestScore) {
+          best = node;
+          bestScore = score;
         }
-        hoverRef.current = {
-          nodeId: drag.id,
-          x: down?.x ?? 0,
-          y: down?.y ?? 0,
-        };
-        handleNodeTap(drag, down?.touch ?? false);
       }
-      return;
+      continue;
     }
-    if (!down) return;
-    const isTap =
-      !down.moved &&
-      performance.now() - down.t < (down.touch ? TOUCH_TAP_TIME : MOUSE_TAP_TIME);
-    if (!isTap) return;
-    if (down.node) {
-      handleNodeTap(down.node, down.touch);
-      return;
-    }
-    hoverRef.current = null;
-    propsRef.current.onBackgroundClick();
-  };
-
-  const handlePointerUp = (
-    event: CanvasPointerEvent<HTMLCanvasElement>
-  ) => endPointer(event);
-
-  const handlePointerCancel = (
-    event: CanvasPointerEvent<HTMLCanvasElement>
-  ) => endPointer(event);
-
-  const handlePointerLeave = (
-    event: CanvasPointerEvent<HTMLCanvasElement>
-  ) => {
-    pointersRef.current.delete(event.pointerId);
-    if (pointersRef.current.size < 2) pinchRef.current = null;
-    if (event.pointerType === "mouse") {
-      hoverRef.current = null;
-    }
-  };
-
-  const handleDoubleClick = (
-    event: CanvasMouseEvent<HTMLCanvasElement>
-  ) => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    const rect = (event.currentTarget as HTMLCanvasElement).getBoundingClientRect();
-    const ox = event.clientX - rect.left;
-    const oy = event.clientY - rect.top;
-    const current = propsRef.current;
-    const node = pickNode(ox, oy, false);
-    if (node) {
-      const kind = node.kind ?? "concept";
-      if (kind === "document" && current.onDocumentOpen) {
-        current.onDocumentOpen(node);
-        return;
+    if (dist <= node.radius + slack) {
+      const score = dist - 12;
+      if (score < bestScore) {
+        best = node;
+        bestScore = score;
       }
-      if (kind === "core" && current.onCoreClick) {
-        current.onCoreClick();
-        return;
-      }
-      engine.camera.focusOn(node, 1.6);
-      return;
     }
-    const { width, height } = sizeRef.current;
-    engine.camera.resetRotation();
-    engine.camera.fit(
-      sceneRef.current.nodes,
-      width,
-      height,
-      computeInsets(
-        width,
-        current.drawerOpen ?? false,
-        current.sheetOpen ?? false
-      )
-    );
-  };
-
-  return (
-    <div
-      ref={containerRef}
-      className="cortex-root absolute inset-0 overflow-hidden"
-    >
-      <canvas
-        ref={canvasRef}
-        className="h-full w-full"
-        style={{ cursor: "grab", touchAction: "none" }}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerCancel={handlePointerCancel}
-        onPointerLeave={handlePointerLeave}
-        onDoubleClick={handleDoubleClick}
-      />
-      <div
-        className="pointer-events-none absolute inset-0"
-        style={{
-          background:
-            "radial-gradient(ellipse at center, transparent 52%, rgba(8, 6, 5, 0.5) 100%)",
-        }}
-      />
-      <ScanlineOverlay active={props.retrieving} />
-    </div>
-  );
+  }
+  return best;
 }
+
+export interface Neighborhood {
+  nodes: Set<string>;
+  edges: Set<string>;
+}
+
+export function neighborhoodOf(
+  nodeId: string,
+  edges: GraphEdge[],
+  depth = 1
+): Neighborhood {
+  const nodes = new Set<string>([nodeId]);
+  const edgeIds = new Set<string>();
+  let frontier = new Set<string>([nodeId]);
+  for (let d = 0; d < depth; d++) {
+    const next = new Set<string>();
+    for (const edge of edges) {
+      if (frontier.has(edge.source) || frontier.has(edge.target)) {
+        edgeIds.add(edge.id);
+        if (!nodes.has(edge.source)) {
+          nodes.add(edge.source);
+          next.add(edge.source);
+        }
+        if (!nodes.has(edge.target)) {
+          nodes.add(edge.target);
+          next.add(edge.target);
+        }
+      }
+    }
+    frontier = next;
+    if (frontier.size === 0) break;
+  }
+  return { nodes, edges: edgeIds };
+}
+
+export function edgesTouching(nodeId: string, edges: GraphEdge[]): GraphEdge[] {
+  return edges.filter((edge) => edge.source === nodeId || edge.target === nodeId);
+}
+
+
+================================================================================
+FILE: src/hooks/useCortexBridge.ts
+================================================================================
+
+import { useCallback, useSyncExternalStore } from "react";
+
+export function normalizeCanonical(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+const UUID_RE = /^[0-9a-f-]{32,36}$/i;
+
+export type CortexViewMode = "core" | "document";
+
+export interface CortexBridgeState {
+  highlightedIds: string[];
+  focusedId: string | null;
+  selectedId: string | null;
+  retrieving: boolean;
+  pulseIds: string[];
+  idByCanonical: Map<string, string>;
+  viewMode: CortexViewMode;
+  selectedDocumentId: string | null;
+  coreExpanded: boolean;
+}
+
+type Listener = () => void;
+
+let state: CortexBridgeState = {
+  highlightedIds: [],
+  focusedId: null,
+  selectedId: null,
+  retrieving: false,
+  pulseIds: [],
+  idByCanonical: new Map(),
+  viewMode: "core",
+  selectedDocumentId: null,
+  coreExpanded: false,
+};
+
+const listeners = new Set<Listener>();
+
+function emit(): void {
+  for (const listener of listeners) listener();
+}
+
+function setState(patch: Partial<CortexBridgeState>): void {
+  state = { ...state, ...patch };
+  emit();
+}
+
+function subscribe(listener: Listener): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+function getSnapshot(): CortexBridgeState {
+  return state;
+}
+
+export function useCortexBridge() {
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot);
+
+  const highlight = useCallback((ids: string[]) => setState({ highlightedIds: ids }), []);
+  const clearHighlight = useCallback(() => setState({ highlightedIds: [] }), []);
+  const focus = useCallback(
+    (bucketId: string | null) => setState({ focusedId: bucketId }),
+    []
+  );
+  const select = useCallback(
+    (bucketId: string | null) => setState({ selectedId: bucketId }),
+    []
+  );
+  const setRetrieving = useCallback(
+    (retrieving: boolean) => setState({ retrieving }),
+    []
+  );
+  const pulse = useCallback((ids: string[]) => {
+    setState({ pulseIds: [] });
+    requestAnimationFrame(() => setState({ pulseIds: ids }));
+  }, []);
+  const setIdMap = useCallback(
+    (map: Map<string, string>) => setState({ idByCanonical: map }),
+    []
+  );
+  const setViewMode = useCallback(
+    (viewMode: CortexViewMode) => setState({ viewMode }),
+    []
+  );
+  const selectDocument = useCallback(
+    (documentId: string | null) => setState({ selectedDocumentId: documentId }),
+    []
+  );
+  const openDocument = useCallback((documentId: string) => {
+    setState({
+      viewMode: "document",
+      selectedDocumentId: documentId,
+      selectedId: null,
+      focusedId: null,
+      highlightedIds: [],
+      coreExpanded: false,
+    });
+  }, []);
+  const closeDocument = useCallback(() => {
+    setState({
+      viewMode: "core",
+      selectedDocumentId: null,
+      selectedId: null,
+      focusedId: null,
+      highlightedIds: [],
+      coreExpanded: false,
+    });
+  }, []);
+  const expandCore = useCallback(() => {
+    setState({
+      coreExpanded: true,
+      selectedId: null,
+      focusedId: null,
+      highlightedIds: [],
+    });
+  }, []);
+  const collapseCore = useCallback(() => {
+    setState({
+      coreExpanded: false,
+      selectedId: null,
+      focusedId: null,
+      highlightedIds: [],
+    });
+  }, []);
+  const resolveId = useCallback(
+    (value: string | null | undefined): string | null => {
+      if (!value) return null;
+      const map = snapshot.idByCanonical;
+      if (map.has(value)) return map.get(value) ?? null;
+      const normalized = normalizeCanonical(value);
+      if (map.has(normalized)) return map.get(normalized) ?? null;
+      if (UUID_RE.test(value)) return value;
+      return null;
+    },
+    [snapshot.idByCanonical]
+  );
+  const reset = useCallback(
+    () =>
+      setState({
+        highlightedIds: [],
+        focusedId: null,
+        selectedId: null,
+        retrieving: false,
+        pulseIds: [],
+        viewMode: "core",
+        selectedDocumentId: null,
+        coreExpanded: false,
+      }),
+    []
+  );
+
+  return {
+    ...snapshot,
+    highlight,
+    clearHighlight,
+    focus,
+    select,
+    setRetrieving,
+    pulse,
+    setIdMap,
+    resolveId,
+    reset,
+    setViewMode,
+    selectDocument,
+    openDocument,
+    closeDocument,
+    expandCore,
+    collapseCore,
+  };
+}
+
+
+================================================================================
+FILE: src/utils/color.ts
+================================================================================
+
+import {
+  CONCEPT_TYPES,
+  RELATIONSHIP_TYPES,
+  STRENGTH_CATEGORIES,
+} from "../constants";
+import type { ConceptType, RelationshipType, StrengthCategory } from "../types";
+
+export interface RGB {
+  r: number;
+  g: number;
+  b: number;
+}
+
+export function clamp01(value: number): number {
+  return value < 0 ? 0 : value > 1 ? 1 : value;
+}
+
+export function lerpScalar(a: number, b: number, t: number): number {
+  return a + (b - a) * t;
+}
+
+export function hexToRgb(hex: string): RGB {
+  let cleaned = hex.replace("#", "");
+  if (cleaned.length === 3) {
+    cleaned = cleaned
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  const value = parseInt(cleaned, 16);
+  return { r: (value >> 16) & 255, g: (value >> 8) & 255, b: value & 255 };
+}
+
+function toHex2(n: number): string {
+  const clamped = Math.max(0, Math.min(255, Math.round(n)));
+  return clamped.toString(16).padStart(2, "0");
+}
+
+export function rgbToHex(rgb: RGB): string {
+  return `#${toHex2(rgb.r)}${toHex2(rgb.g)}${toHex2(rgb.b)}`;
+}
+
+export function rgbToCss(rgb: RGB, alpha = 1): string {
+  return alpha >= 1
+    ? `rgb(${rgb.r}, ${rgb.g}, ${rgb.b})`
+    : `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${Math.round(clamp01(alpha) * 1000) / 1000})`;
+}
+
+export function withAlpha(hex: string, alpha: number): string {
+  return rgbToCss(hexToRgb(hex), alpha);
+}
+
+export function mixHex(a: string, b: string, t: number): RGB {
+  const ca = hexToRgb(a);
+  const cb = hexToRgb(b);
+  const clamped = clamp01(t);
+  return {
+    r: Math.round(lerpScalar(ca.r, cb.r, clamped)),
+    g: Math.round(lerpScalar(ca.g, cb.g, clamped)),
+    b: Math.round(lerpScalar(ca.b, cb.b, clamped)),
+  };
+}
+
+const STRENGTH_STOPS: Array<{ at: number; hex: string }> = [
+  { at: 0, hex: "#46505B" },
+  { at: 0.04, hex: "#6E4A45" },
+  { at: 0.1, hex: "#FF5C49" },
+  { at: 0.25, hex: "#C23A2C" },
+  { at: 0.4, hex: "#C45A28" },
+  { at: 0.55, hex: "#E07530" },
+  { at: 0.7, hex: "#FF8A3D" },
+  { at: 0.85, hex: "#FFBE4A" },
+  { at: 1, hex: "#FFE6A8" },
+];
+
+export function strengthColor(strength: number): string {
+  const s = clamp01(strength);
+  for (let i = 0; i < STRENGTH_STOPS.length - 1; i++) {
+    const from = STRENGTH_STOPS[i];
+    const to = STRENGTH_STOPS[i + 1];
+    if (s >= from.at && s <= to.at) {
+      const t = to.at === from.at ? 0 : (s - from.at) / (to.at - from.at);
+      return rgbToHex(mixHex(from.hex, to.hex, t));
+    }
+  }
+  return STRENGTH_STOPS[STRENGTH_STOPS.length - 1].hex;
+}
+
+export function strengthGlow(strength: number, alphaScale = 1): string {
+  const alpha = (0.18 + clamp01(strength) * 0.56) * alphaScale;
+  return withAlpha(strengthColor(strength), alpha);
+}
+
+export interface NodePalette {
+  core: string;
+  rim: string;
+  glow: string;
+  label: string;
+}
+
+export function nodePalette(strength: number, conceptType?: string): NodePalette {
+  const s = clamp01(strength);
+  const heat = strengthColor(s);
+  const rim = conceptType
+    ? rgbToHex(mixHex(heat, typeColor(conceptType as ConceptType), 0.28))
+    : heat;
+  const coreTarget = s > 0.4 ? "#FFF1CC" : "#0E0B09";
+  const coreMix = 0.12 + s * 0.3;
+  return {
+    core: rgbToCss(mixHex(rim, coreTarget, coreMix)),
+    rim,
+    glow: withAlpha(rim, 0.2 + s * 0.58),
+    label: "#ECE5DA",
+  };
+}
+
+export function nodeRadius(importance: number): number {
+  return 18 + Math.max(1, Math.min(10, importance)) * 3.5;
+}
+
+export function categoryColor(category: StrengthCategory): string {
+  return STRENGTH_CATEGORIES[category].color;
+}
+
+export function categoryGlow(category: StrengthCategory, alpha = 0.4): string {
+  return withAlpha(STRENGTH_CATEGORIES[category].color, alpha);
+}
+
+export function typeColor(type: ConceptType): string {
+  return CONCEPT_TYPES[type]?.color ?? "#A29384";
+}
+
+export function typeGlow(type: ConceptType, alpha = 0.4): string {
+  return withAlpha(typeColor(type), alpha);
+}
+
+export function relationshipColor(type: RelationshipType): string {
+  return RELATIONSHIP_TYPES[type]?.color ?? "rgba(236, 229, 218, 0.16)";
+}
+
+
+================================================================================
+FILE: src/constants.ts
+================================================================================
+
+import type {
+  ConceptType,
+  CortexDocumentState,
+  CortexFilterMode,
+  CortexMemoryLinkState,
+  CortexViewMode,
+  RelationshipType,
+  StrengthCategory,
+} from "./types";
+
+export const APP_NAME = "ContextOS";
+
+export const ROUTES = {
+  cortex: "/cortex",
+  dive: "/dive",
+  archive: "/archive",
+  settings: "/settings",
+  onboarding: "/onboarding",
+  login: "/login",
+  signup: "/signup",
+} as const;
+
+export const STORAGE_KEYS = {
+  token: "contextos.token",
+  user: "contextos.user",
+  lastSession: "contextos.lastSession",
+  cortexLayout: "contextos.cortexLayout",
+  cortexView: "contextos.cortexView",
+  cortexActiveDocument: "contextos.cortexActiveDocument",
+  cortexLinkFilter: "contextos.cortexLinkFilter",
+  cortexFilters: "contextos.cortexFilters",
+} as const;
+
+export const CORTEX_LAYOUTS = ["constellation", "orbit", "timeline"] as const;
+export type CortexLayout = (typeof CORTEX_LAYOUTS)[number];
+
+export const CORTEX_VIEW_MODES: readonly CortexViewMode[] = [
+  "core",
+  "document",
+] as const;
+
+export const CORTEX_FILTER_MODES: readonly CortexFilterMode[] = [
+  "all",
+  "linked",
+  "islands",
+] as const;
+
+export const CORTEX_CORE_NODE_ID = "core:main";
+export const CORTEX_DOCUMENT_NODE_PREFIX = "doc:";
+
+export const CORTEX_DOCUMENT_STATE_LABELS: Record<CortexDocumentState, string> = {
+  connected: "Connected",
+  solo: "Solo",
+  processing: "Processing",
+  empty: "Empty",
+};
+
+export const CORTEX_MEMORY_LINK_LABELS: Record<CortexMemoryLinkState, string> = {
+  linked: "Linked",
+  island: "Island",
+};
+
+export const CORTEX_FILTER_LABELS: Record<CortexFilterMode, string> = {
+  all: "All",
+  linked: "Linked",
+  islands: "Islands",
+};
+
+export const STRENGTH_CATEGORIES: Record<
+  StrengthCategory,
+  { label: string; min: number; color: string; glow: string }
+> = {
+  strong: {
+    label: "Strong",
+    min: 0.7,
+    color: "#FF8A3D",
+    glow: "rgba(255, 138, 61, 0.55)",
+  },
+  fading: {
+    label: "Fading",
+    min: 0.4,
+    color: "#B06F3A",
+    glow: "rgba(176, 111, 58, 0.35)",
+  },
+  critical: {
+    label: "Critical",
+    min: 0.1,
+    color: "#FF5C49",
+    glow: "rgba(255, 92, 73, 0.5)",
+  },
+  forgotten: {
+    label: "Forgotten",
+    min: 0,
+    color: "#57504A",
+    glow: "rgba(87, 80, 74, 0.15)",
+  },
+};
+
+export const CATEGORY_ORDER: StrengthCategory[] = [
+  "strong",
+  "fading",
+  "critical",
+  "forgotten",
+];
+
+export function strengthCategory(strength: number): StrengthCategory {
+  if (strength >= STRENGTH_CATEGORIES.strong.min) return "strong";
+  if (strength >= STRENGTH_CATEGORIES.fading.min) return "fading";
+  if (strength >= STRENGTH_CATEGORIES.critical.min) return "critical";
+  return "forgotten";
+}
+
+export const CONCEPT_TYPES: Record<
+  ConceptType,
+  { label: string; color: string; priority: number }
+> = {
+  decision: { label: "Decision", color: "#FF8A3D", priority: 1 },
+  problem: { label: "Problem", color: "#FF5C49", priority: 2 },
+  fact: { label: "Fact", color: "#8FD8D2", priority: 3 },
+  code: { label: "Code", color: "#9DB98A", priority: 4 },
+  entity: { label: "Entity", color: "#F4D06F", priority: 5 },
+  event: { label: "Event", color: "#86B4E8", priority: 6 },
+  preference: { label: "Preference", color: "#E39AB8", priority: 7 },
+};
+
+export const CONCEPT_TYPE_ORDER: ConceptType[] = [
+  "fact",
+  "decision",
+  "problem",
+  "code",
+  "entity",
+  "event",
+  "preference",
+];
+
+export const RELATIONSHIP_TYPES: Record<
+  RelationshipType,
+  {
+    label: string;
+    inverseLabel: string;
+    symbol: string;
+    directed: boolean;
+    dash: number[];
+    color: string;
+  }
+> = {
+  causes: {
+    label: "Causes",
+    inverseLabel: "Caused by",
+    symbol: "→",
+    directed: true,
+    dash: [],
+    color: "rgba(255, 138, 61, 0.5)",
+  },
+  evolves_into: {
+    label: "Evolves into",
+    inverseLabel: "Evolved from",
+    symbol: "⇝",
+    directed: true,
+    dash: [8, 5],
+    color: "rgba(157, 185, 138, 0.5)",
+  },
+  replaces: {
+    label: "Replaces",
+    inverseLabel: "Replaced by",
+    symbol: "⇒",
+    directed: true,
+    dash: [3, 3],
+    color: "rgba(255, 92, 73, 0.45)",
+  },
+  part_of: {
+    label: "Part of",
+    inverseLabel: "Contains",
+    symbol: "⊂",
+    directed: true,
+    dash: [12, 4, 2, 4],
+    color: "rgba(134, 180, 232, 0.45)",
+  },
+  requires: {
+    label: "Requires",
+    inverseLabel: "Required by",
+    symbol: "⊨",
+    directed: true,
+    dash: [2, 3],
+    color: "rgba(227, 154, 184, 0.45)",
+  },
+  // FIX 4: was rgba(236, 229, 218, 0.16) — invisible on the void background.
+  related_to: {
+    label: "Related to",
+    inverseLabel: "Related to",
+    symbol: "↔",
+    directed: false,
+    dash: [2, 5],
+    color: "rgba(236, 229, 218, 0.38)",
+  },
+};
+
+export const DECAY_THRESHOLDS = {
+  strong: 0.7,
+  fading: 0.4,
+  forgotten: 0.1,
+  retainWeight: 0.7,
+  accessBoostWeight: 0.3,
+} as const;
+
+export const FORGETTING_BUDGET_MAX = 20;
+export const MAX_UPLOAD_BYTES = 4 * 1024 * 1024;
+export const JOB_POLL_INTERVAL_MS = 3000;
+export const REMINDER_POLL_INTERVAL_MS = 60000;
+export const STATS_REFRESH_INTERVAL_MS = 30000;
 
 
 ================================================================================

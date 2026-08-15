@@ -24,9 +24,10 @@ import type {
   RelationshipType,
   StrengthCategory,
 } from "../types";
+import { DOMAIN_PALETTE } from "../utils/color";
 
-type CortexNodeKind = "core" | "document" | "concept";
-type CortexSceneMode = "core" | "document" | "graph";
+type CortexNodeKind = "core" | "document" | "concept" | "domain";
+type CortexSceneMode = "core" | "document" | "domain" | "graph";
 type CortexLinkFilter = "all" | "linked" | "islands";
 
 interface CortexGraphNode extends GraphNode {
@@ -148,6 +149,7 @@ function createCortexNode(input: {
   createdAt: number;
   kind: CortexNodeKind;
   domain?: string | null;
+  domainColor?: string | null;
   documentId?: string | null;
   conceptCount?: number;
   connectedConceptCount?: number;
@@ -174,6 +176,7 @@ function createCortexNode(input: {
     ...base,
     kind: input.kind,
     domain: input.domain ?? null,
+    domainColor: input.domainColor ?? null,
     documentId: input.documentId ?? null,
     conceptCount: input.conceptCount,
     connectedConceptCount: input.connectedConceptCount,
@@ -246,6 +249,7 @@ export function CortexPage() {
     () => (localStorage.getItem(STORAGE_KEYS.cortexLayout) as LayoutMode) || "constellation"
   );
   const [fitSignal, setFitSignal] = useState(0);
+  const [selectedDomain, setSelectedDomain] = useState<string | null>(null);
   const [statusIdle, setStatusIdle] = useState(true);
   const statusTimerRef = useRef<number | null>(null);
   const debouncedSearch = useDebounce(searchQuery, 260);
@@ -263,6 +267,88 @@ export function CortexPage() {
     () => data?.bucketDocumentMap ?? EMPTY_BUCKET_DOCUMENT_MAP,
     [data]
   );
+  const domainByDocument = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of documents) {
+      m.set(d.documentId, String((d as any).domain ?? "general"));
+    }
+    return m;
+  }, [documents]);
+  const conceptDomainMap = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const c of concepts) {
+      m.set(
+        c.bucketId,
+        c.documentId ? domainByDocument.get(c.documentId) ?? "general" : "general"
+      );
+    }
+    return m;
+  }, [concepts, domainByDocument]);
+  const domainAggs = useMemo(() => {
+    const m = new Map<string, { domain: string; count: number; strengthSum: number; docs: number }>();
+    for (const d of documents) {
+      const dom = domainByDocument.get(d.documentId) ?? "general";
+      const a = m.get(dom) ?? { domain: dom, count: 0, strengthSum: 0, docs: 0 };
+      a.docs += 1;
+      m.set(dom, a);
+    }
+    for (const c of concepts) {
+      const dom = conceptDomainMap.get(c.bucketId) ?? "general";
+      const a = m.get(dom) ?? { domain: dom, count: 0, strengthSum: 0, docs: 0 };
+      a.count += 1;
+      a.strengthSum += c.strength;
+      m.set(dom, a);
+    }
+    return Array.from(m.values()).sort((a, b) => a.domain.localeCompare(b.domain));
+  }, [documents, concepts, domainByDocument, conceptDomainMap]);
+  const domainHubNodes = useMemo<CortexGraphNode[]>(
+    () =>
+      domainAggs.map((agg, index) => {
+        const avg = agg.count > 0 ? agg.strengthSum / agg.count : 0;
+        return createCortexNode({
+          id: `domain:${agg.domain}`,
+          label: agg.domain,
+          conceptType: "entity",
+          importance: 10,
+          strength: avg,
+          category: strengthCategory(avg),
+          accessCount: agg.count,
+          daysSinceAccess: 0,
+          createdAt: Date.now(),
+          kind: "domain",
+          domain: agg.domain,
+          domainColor: DOMAIN_PALETTE[index % DOMAIN_PALETTE.length],
+          conceptCount: agg.count,
+          expanded: selectedDomain === agg.domain,
+        });
+      }),
+    [domainAggs, selectedDomain]
+  );
+  const domainBridgeEdges = useMemo<GraphEdge[]>(() => {
+    const aggMap = new Map<string, { count: number; conf: number }>();
+    for (const r of relationships) {
+      const sd = conceptDomainMap.get(r.sourceBucket) ?? null;
+      const td = conceptDomainMap.get(r.targetBucket) ?? null;
+      if (!sd || !td || sd === td) continue;
+      const key = [sd, td].sort().join("::");
+      const cur = aggMap.get(key) ?? { count: 0, conf: 0 };
+      cur.count += 1;
+      cur.conf += r.confidence;
+      aggMap.set(key, cur);
+    }
+    return Array.from(aggMap.entries()).map(([key, v]) => {
+      const parts = key.split("::");
+      return createCortexEdge({
+        id: `domain-bridge-${key}`,
+        source: `domain:${parts[0]}`,
+        target: `domain:${parts[1]}`,
+        type: "related_to",
+        confidence: Math.min(1, v.conf / Math.max(1, v.count)),
+        edgeKind: "domain-bridge",
+        crossDocument: true,
+      });
+    });
+  }, [relationships, conceptDomainMap]);
   const core = data?.core ?? null;
   const isEmpty = !map.loading && !map.error && documents.length === 0 && concepts.length === 0;
 
@@ -300,7 +386,7 @@ export function CortexPage() {
 
   useEffect(() => {
     setFitSignal((current) => current + 1);
-  }, [viewMode, selectedDocumentId, searchOpen, filtersOpen, coreExpanded]);
+  }, [viewMode, selectedDocumentId, searchOpen, filtersOpen, coreExpanded, selectedDomain]);
 
   useEffect(() => {
     const term = debouncedSearch.trim();
@@ -373,7 +459,8 @@ export function CortexPage() {
 
   const inDocumentView = viewMode === "document" && activeDocument !== null;
   const inCoreExpanded = coreExpanded && !inDocumentView;
-  const inDeepView = inDocumentView || inCoreExpanded;
+  const inDomainView = selectedDomain !== null && !inDocumentView;
+  const inDeepView = inDocumentView || inCoreExpanded || inDomainView;
 
   const coreNodes = useMemo<CortexGraphNode[]>(() => {
     const averageStrength = core?.averageStrength ?? 0;
@@ -484,7 +571,17 @@ export function CortexPage() {
     return concepts.filter((concept) => concept.documentId === activeDocument.documentId);
   }, [activeDocument, concepts]);
 
-  const scopedConcepts = inDocumentView ? documentConcepts : concepts;
+  const domainConcepts = useMemo(() => {
+    if (selectedDomain === null) return concepts;
+    return concepts.filter(
+      (c) => (conceptDomainMap.get(c.bucketId) ?? "general") === selectedDomain
+    );
+  }, [concepts, conceptDomainMap, selectedDomain]);
+  const scopedConcepts = inDocumentView
+    ? documentConcepts
+    : inDomainView
+      ? domainConcepts
+      : concepts;
 
   const visibleConcepts = useMemo(
     () =>
@@ -546,28 +643,42 @@ export function CortexPage() {
       });
   }, [relationships, visibleConceptIds, bucketDocumentMap]);
 
+  const domainTouchBridges = useMemo(
+    () =>
+      domainBridgeEdges.filter(
+        (e) =>
+          e.source === `domain:${selectedDomain}` ||
+          e.target === `domain:${selectedDomain}`
+      ),
+    [domainBridgeEdges, selectedDomain]
+  );
   const currentNodes = inDocumentView
     ? conceptNodes
-    : inCoreExpanded
-      ? [...coreNodes, ...conceptNodes]
-      : documents.length > 0
-        ? coreNodes
-        : fallbackNodes;
+    : inDomainView
+      ? [...domainHubNodes, ...conceptNodes]
+      : inCoreExpanded
+        ? [...coreNodes, ...conceptNodes]
+        : documents.length > 0
+          ? domainHubNodes
+          : fallbackNodes;
   const currentEdges = inDocumentView
     ? conceptEdges
-    : inCoreExpanded
-      ? [...coreEdges, ...conceptEdges]
-      : documents.length > 0
-        ? coreEdges
-        : fallbackEdges;
-
+    : inDomainView
+      ? [...conceptEdges, ...domainTouchBridges]
+      : inCoreExpanded
+        ? [...coreEdges, ...conceptEdges]
+        : documents.length > 0
+          ? domainBridgeEdges
+          : fallbackEdges;
   const sceneMode: CortexSceneMode = inDocumentView
     ? "document"
-    : inCoreExpanded
-      ? "core"
-      : documents.length > 0
+    : inDomainView
+      ? "domain"
+      : inCoreExpanded
         ? "core"
-        : "graph";
+        : documents.length > 0
+          ? "domain"
+          : "graph";
 
   const inspectorOpen = selectedId !== null;
   const sheetOpen = searchOpen || filtersOpen || inspectorOpen;
@@ -645,10 +756,21 @@ export function CortexPage() {
     select(null);
     focus(null);
   };
-
+  const handleDomainClick = (node: GraphNode) => {
+    const cortexNode = node as CortexGraphNode;
+    const dom = cortexNode.domain ?? node.id.replace(/^domain:/, "");
+    clearHighlight();
+    select(null);
+    focus(null);
+    setSelectedDomain(dom);
+  };
   const handleBack = () => {
     if (inDocumentView) {
       closeDocument();
+      return;
+    }
+    if (inDomainView) {
+      setSelectedDomain(null);
       return;
     }
     if (inCoreExpanded) {
@@ -656,11 +778,13 @@ export function CortexPage() {
     }
   };
 
-  const statusLabel = inCoreExpanded
-    ? `${concepts.length} memories in view · ${relationships.length} links`
-    : activeDocument
-      ? `${activeDocument.conceptCount ?? 0} memories · ${activeDocument.connectedConceptCount ?? 0} linked · ${activeDocument.isolatedConceptCount ?? 0} islands`
-      : `${core?.documentCount ?? 0} files · ${core?.totalMemories ?? 0} memories · avg ${Math.round((core?.averageStrength ?? 0) * 100)}%`;
+  const statusLabel = inDomainView
+    ? `${selectedDomain} · ${domainConcepts.length} memories · ${conceptEdges.length} links`
+    : inCoreExpanded
+      ? `${concepts.length} memories in view · ${relationships.length} links`
+      : activeDocument
+        ? `${activeDocument.conceptCount ?? 0} memories · ${activeDocument.connectedConceptCount ?? 0} linked · ${activeDocument.isolatedConceptCount ?? 0} islands`
+        : `${core?.documentCount ?? 0} files · ${core?.totalMemories ?? 0} memories · avg ${Math.round((core?.averageStrength ?? 0) * 100)}%`;
 
   return (
     <div className="cortex-root relative h-full overflow-hidden">
@@ -679,6 +803,7 @@ export function CortexPage() {
         drawerOpen={inspectorOpen}
         sheetOpen={sheetOpen}
         onCoreClick={handleCoreClick}
+        onDomainClick={handleDomainClick}
         onDocumentClick={handleDocumentClick}
         onDocumentOpen={handleDocumentClick}
         onConceptClick={handleConceptClick}

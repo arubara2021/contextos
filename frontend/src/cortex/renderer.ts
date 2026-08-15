@@ -5,6 +5,7 @@ import { RING_LABELS } from "./layouts";
 import { RELATIONSHIP_TYPES } from "../constants";
 import {
   categoryColor,
+  domainColor,
   nodePalette,
   typeColor,
   withAlpha,
@@ -483,9 +484,13 @@ export class CortexRenderer {
     emphasis: Emphasis,
     camera: Camera
   ): void {
-    const expanded = scene.nodes.find(
+    const expandedDoc = scene.nodes.find(
       (node) => (node.kind ?? "concept") === "document" && node.expanded
     );
+    const expandedHub = scene.nodes.find(
+      (node) => (node.kind ?? "concept") === "domain" && node.expanded
+    );
+    const expanded = expandedDoc ?? expandedHub;
     if (!expanded) return;
     const members = scene.nodes.filter((node) => (node.kind ?? "concept") === "concept");
     if (members.length === 0) return;
@@ -506,15 +511,18 @@ export class CortexRenderer {
     const w = maxX - minX + pad * 2;
     const h = maxY - minY + pad * 2;
     const dim = emphasis.active !== null ? 0.45 : 1;
+    const color = expandedHub
+      ? expandedHub.domainColor ?? domainColor(expandedHub.domain)
+      : "#FF8A3D";
     const { ctx } = this;
     const grad = ctx.createLinearGradient(x, y, x, y + h);
-    grad.addColorStop(0, withAlpha("#FF8A3D", 0.055 * dim));
+    grad.addColorStop(0, withAlpha(color, 0.055 * dim));
     grad.addColorStop(1, withAlpha("#8FD8D2", 0.03 * dim));
     ctx.fillStyle = grad;
     this.roundRect(x, y, w, h, 30);
     ctx.fill();
     ctx.setLineDash([10, 8]);
-    ctx.strokeStyle = withAlpha("#FF8A3D", 0.22 * dim);
+    ctx.strokeStyle = withAlpha(color, 0.22 * dim);
     ctx.lineWidth = 1.2;
     this.roundRect(x, y, w, h, 30);
     ctx.stroke();
@@ -523,8 +531,11 @@ export class CortexRenderer {
     ctx.font = `500 ${labelSize}px 'Spline Sans Mono', monospace`;
     ctx.textAlign = "left";
     ctx.textBaseline = "top";
-    ctx.fillStyle = withAlpha("#FFB15C", 0.65 * dim);
-    ctx.fillText(`${expanded.label.toUpperCase()} FIELD`, x + 18, y + 14);
+    ctx.fillStyle = withAlpha(color, 0.65 * dim);
+    const fieldLabel = expandedHub
+      ? `${String(expandedHub.domain ?? "general").toUpperCase()} FIELD`
+      : `${expanded.label.toUpperCase()} FIELD`;
+    ctx.fillText(fieldLabel, x + 18, y + 14);
   }
 
   private drawEdges(scene: Scene, emphasis: Emphasis, time: number): void {
@@ -582,7 +593,9 @@ export class CortexRenderer {
         (a.kind ?? "concept") === "core" ||
         (b.kind ?? "concept") === "core";
       const isBridge =
-        edge.edgeKind === "document-bridge" || edge.crossDocument === true;
+        edge.edgeKind === "document-bridge" ||
+        edge.edgeKind === "domain-bridge" ||
+        edge.crossDocument === true;
       const dx = b.x - a.x;
       const dy = b.y - a.y;
       const dist = Math.max(Math.sqrt(dx * dx + dy * dy), 1);
@@ -869,10 +882,121 @@ export class CortexRenderer {
         this.drawDocumentNode(node, emphasis, options, camera);
         continue;
       }
+      if (kind === "domain") {
+        this.drawDomainNode(node, emphasis, options, camera);
+        continue;
+      }
       this.drawConceptNode(node, emphasis, options);
     }
   }
-
+  private drawDomainNode(
+    node: GraphNode,
+    emphasis: Emphasis,
+    options: RenderOptions,
+    camera: Camera
+  ): void {
+    const { ctx } = this;
+    const dimmed = emphasis.active !== null && !emphasis.active.has(node.id);
+    const isSelected = options.selectedId === node.id;
+    const isHovered = options.hover?.nodeId === node.id;
+    const isHighlighted = options.highlightedIds.has(node.id);
+    const pulseStart = this.pulseStarts.get(node.id);
+    const color = node.domainColor ?? domainColor(node.domain);
+    const r = Math.max(node.radius || 44, 36);
+    const time = options.time;
+    const reduced = options.reducedMotion;
+    const seed = hashSeed(node.id);
+    ctx.globalAlpha = dimmed ? 0.55 : 1;
+    const halo = ctx.createRadialGradient(node.x, node.y, r * 0.3, node.x, node.y, r * 2.6);
+    halo.addColorStop(0, withAlpha(color, 0.26));
+    halo.addColorStop(0.55, withAlpha(color, 0.08));
+    halo.addColorStop(1, "rgba(0, 0, 0, 0)");
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, r * 2.6, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = withAlpha(color, 0.5);
+    ctx.lineWidth = 1.4;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, r, 0, Math.PI * 2);
+    ctx.stroke();
+    const sweep = reduced ? 0.9 : time * 0.0008 + seed;
+    ctx.strokeStyle = withAlpha(color, 0.85);
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, r, sweep, sweep + 1.2);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(236, 229, 218, 0.25)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 6]);
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, r * 1.35, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const nucleus = r * 0.62;
+    const core = ctx.createRadialGradient(
+      node.x - nucleus * 0.3,
+      node.y - nucleus * 0.35,
+      nucleus * 0.12,
+      node.x,
+      node.y,
+      nucleus
+    );
+    core.addColorStop(0, "#FFF6E0");
+    core.addColorStop(0.45, color);
+    core.addColorStop(1, withAlpha(color, 0.85));
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(node.x, node.y, nucleus, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = withAlpha(color, 0.9);
+    ctx.lineWidth = 1.2;
+    ctx.stroke();
+    if (isSelected || isHighlighted) {
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, r + 8, 0, Math.PI * 2);
+      ctx.strokeStyle = isSelected
+        ? "rgba(143, 216, 210, 0.9)"
+        : withAlpha(color, 0.9);
+      ctx.lineWidth = 1.6;
+      ctx.stroke();
+    }
+    if (isHovered) {
+      ctx.beginPath();
+      ctx.arc(node.x, node.y, r + 13, 0, Math.PI * 2);
+      ctx.strokeStyle = "rgba(236, 229, 218, 0.3)";
+      ctx.lineWidth = 1.1;
+      ctx.stroke();
+    }
+    if (pulseStart !== undefined) {
+      const t = (options.time - pulseStart) / 900;
+      if (t < 1) {
+        ctx.beginPath();
+        ctx.arc(node.x, node.y, r + t * 56, 0, Math.PI * 2);
+        ctx.strokeStyle = withAlpha(color, 0.6 * (1 - t));
+        ctx.lineWidth = 2.4 * (1 - t) + 0.6;
+        ctx.stroke();
+      }
+    }
+    const zoom = camera.zoom;
+    const titleScreen = clampScalar(r * zoom * 0.3, 10, 18);
+    const titleSize = titleScreen / zoom;
+    ctx.font = `600 ${titleSize}px 'Spline Sans Mono', monospace`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    ctx.fillStyle = "#ECE5DA";
+    ctx.fillText(node.label.toUpperCase(), node.x, node.y + r + 14 / zoom);
+    const metaScreen = clampScalar(r * zoom * 0.2, 8, 12);
+    const metaSize = metaScreen / zoom;
+    ctx.font = `500 ${metaSize}px 'Spline Sans Mono', monospace`;
+    ctx.fillStyle = "rgba(162, 147, 132, 0.9)";
+    ctx.fillText(
+      `${node.conceptCount ?? 0} memories`,
+      node.x,
+      node.y + r + 14 / zoom + titleSize * 1.3
+    );
+    ctx.globalAlpha = 1;
+  }
   private drawCoreNode(
     node: GraphNode,
     emphasis: Emphasis,
