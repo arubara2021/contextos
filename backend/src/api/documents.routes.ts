@@ -14,6 +14,7 @@ import { parseDocument } from "../ingestion/parsers";
 import { query, queryOne, queryMany } from "../database";
 import type { FileFormat } from "../types/ingestion.types";
 import logger from "../utils/logger";
+import { triggerGitHubWorker } from "../tasks/github-dispatch";
 
 const SANDBOX_MAX_UPLOADS = 3;
 
@@ -831,6 +832,7 @@ router.post(
       });
 
       logger.info("Document queued for worker processing", { jobId, userId: req.userId });
+      triggerGitHubWorker().catch(() => { });
 
       res.status(202).json({
         jobId,
