@@ -455,19 +455,19 @@ function coreLayout(nodes: GraphNode[]): void {
 
   // ---- place domain hubs far enough apart for their full clusters ----
   const HUB_GAP = 240;
+  const placeHub = (hub: GraphNode, x: number, y: number) => {
+    if (!hub.held) pin(hub, x, y);
+    hub.clusterId = `hub:${String(hub.domain ?? "")}`;
+    hub.clusterCenterX = hub.x;
+    hub.clusterCenterY = hub.y;
+  };
   if (hubs.length === 1) {
-    pin(hubs[0], 0, 0);
-    hubs[0].clusterId = `hub:${String(hubs[0].domain ?? "")}`;
-    hubs[0].clusterCenterX = 0;
-    hubs[0].clusterCenterY = 0;
+    placeHub(hubs[0], 0, 0);
   } else if (hubs.length > 1) {
     hubs.forEach((hub, hi) => {
       const angle = -Math.PI / 2 + (hi / hubs.length) * TAU;
       const dist = (clusterRadiusByDomain.get(String(hub.domain ?? "")) ?? 300) + HUB_GAP / 2;
-      pin(hub, Math.cos(angle) * dist, Math.sin(angle) * dist);
-      hub.clusterId = `hub:${String(hub.domain ?? "")}`;
-      hub.clusterCenterX = hub.x;
-      hub.clusterCenterY = hub.y;
+      placeHub(hub, Math.cos(angle) * dist, Math.sin(angle) * dist);
     });
   }
   if (hubs.length === 0 && legacyCore) {
@@ -483,11 +483,13 @@ function coreLayout(nodes: GraphNode[]): void {
     const cx = hub?.x ?? 0;
     const cy = hub?.y ?? 0;
     for (const slot of slots) {
-      pin(
-        slot.doc,
-        cx + Math.cos(slot.angle) * slot.orbit,
-        cy + Math.sin(slot.angle) * slot.orbit
-      );
+      if (!slot.doc.held) {
+        pin(
+          slot.doc,
+          cx + Math.cos(slot.angle) * slot.orbit,
+          cy + Math.sin(slot.angle) * slot.orbit
+        );
+      }
       slot.doc.clusterId = `domain:${domain}`;
       slot.doc.clusterCenterX = cx;
       slot.doc.clusterCenterY = cy;
@@ -572,6 +574,10 @@ export function applyLayout(
     initializeNode(node);
     if (node.held) {
       clearLayoutVisuals(node);
+      const kind = node.kind ?? "concept";
+      if (mode === "core" && (kind === "domain" || kind === "document")) {
+        placed.push(node);
+      }
     } else {
       resetFields(node);
       placed.push(node);

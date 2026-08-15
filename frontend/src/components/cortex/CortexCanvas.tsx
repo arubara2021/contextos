@@ -278,6 +278,7 @@ export function CortexCanvas(props: CortexCanvasProps) {
         signals,
         {
           layout: current.layout,
+          sceneMode: sceneModeRef.current,
           reducedMotion: reducedRef.current,
           highlightedIds: highlighted,
           selectedId: current.selectedId,
@@ -530,26 +531,19 @@ export function CortexCanvas(props: CortexCanvasProps) {
     const ox = event.clientX - rect.left;
     const oy = event.clientY - rect.top;
     const { width, height } = sizeRef.current;
+
     if (pointersRef.current.has(event.pointerId)) {
       pointersRef.current.set(event.pointerId, { x: ox, y: oy });
     }
+
     if (pointersRef.current.size >= 2) {
       const current = pointerDist();
       const previous = pinchRef.current;
       if (current && previous) {
         const rawFactor = current.dist / (previous.dist || 1);
         const factor = 1 + (rawFactor - 1) * 0.7;
-        engine.camera.zoomAt(
-          current.cx,
-          current.cy,
-          factor,
-          width,
-          height
-        );
-        engine.camera.panBy(
-          (current.cx - previous.cx) * 0.6,
-          (current.cy - previous.cy) * 0.6
-        );
+        engine.camera.zoomAt(current.cx, current.cy, factor, width, height);
+        engine.camera.panBy((current.cx - previous.cx) * 0.6, (current.cy - previous.cy) * 0.6);
         let angleDelta = current.angle - previous.angle;
         if (angleDelta > Math.PI) angleDelta -= Math.PI * 2;
         if (angleDelta < -Math.PI) angleDelta += Math.PI * 2;
@@ -560,6 +554,7 @@ export function CortexCanvas(props: CortexCanvasProps) {
       releaseDrag();
       return;
     }
+
     const drag = dragNodeRef.current;
     if (drag) {
       const world = engine.camera.screenToWorld(ox, oy, width, height);
@@ -571,8 +566,10 @@ export function CortexCanvas(props: CortexCanvasProps) {
       lastSingleRef.current = { x: ox, y: oy };
       return;
     }
+
     const down = downRef.current;
-    if (down?.node && (down.node.kind ?? "concept") === "concept" && !down.moved) {
+    const innerKind = down?.node ? (down.node.kind ?? "concept") : null;
+    if (down?.node && (innerKind === "concept" || innerKind === "domain") && !down.moved) {
       const dsx = ox - down.x;
       const dsy = oy - down.y;
       const threshold = down.touch ? TOUCH_TAP_THRESHOLD : MOUSE_TAP_THRESHOLD;
@@ -588,8 +585,8 @@ export function CortexCanvas(props: CortexCanvasProps) {
       lastSingleRef.current = { x: ox, y: oy };
       return;
     }
-    const pressing =
-      event.buttons !== 0 || event.pointerType === "touch";
+
+    const pressing = event.buttons !== 0 || event.pointerType === "touch";
     if (pressing) {
       const last = lastSingleRef.current;
       if (last) {
@@ -604,10 +601,9 @@ export function CortexCanvas(props: CortexCanvasProps) {
       lastSingleRef.current = { x: ox, y: oy };
       return;
     }
+
     const node = pickNode(ox, oy, false);
-    hoverRef.current = node
-      ? { nodeId: node.id, x: ox, y: oy }
-      : null;
+    hoverRef.current = node ? { nodeId: node.id, x: ox, y: oy } : null;
     if (canvasRef.current) {
       canvasRef.current.style.cursor = node ? "pointer" : "grab";
     }
@@ -623,12 +619,15 @@ export function CortexCanvas(props: CortexCanvasProps) {
       lastSingleRef.current = { ...remaining };
     }
     if (pointersRef.current.size !== 0) return;
+
     const down = downRef.current;
     downRef.current = null;
     lastSingleRef.current = null;
     const drag = dragNodeRef.current;
     dragNodeRef.current = null;
+
     if (canvasRef.current) canvasRef.current.style.cursor = "grab";
+
     if (drag) {
       if (down?.moved) {
         drag.held = true;
@@ -648,11 +647,13 @@ export function CortexCanvas(props: CortexCanvasProps) {
       }
       return;
     }
+
     if (!down) return;
     const isTap =
       !down.moved &&
       performance.now() - down.t < (down.touch ? TOUCH_TAP_TIME : MOUSE_TAP_TIME);
     if (!isTap) return;
+
     if (down.node) {
       handleNodeTap(down.node, down.touch);
       return;

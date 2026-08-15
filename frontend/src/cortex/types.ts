@@ -97,6 +97,7 @@ export interface HoverState {
 
 export interface RenderOptions {
   layout: LayoutMode;
+  sceneMode?: "core" | "document" | "graph";
   reducedMotion: boolean;
   highlightedIds: Set<string>;
   selectedId: string | null;

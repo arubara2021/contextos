@@ -93,7 +93,7 @@ export class CortexRenderer {
     this.syncPulses(options.pulseIds, options.time);
     const emphasis = this.computeEmphasis(scene, options);
     this.drawScaffold(scene, emphasis, options, camera);
-    this.drawDocumentHull(scene, emphasis, camera);
+    this.drawDocumentHull(scene, emphasis, options, camera);
     this.drawEdges(scene, emphasis, options.time);
     this.drawSignals(signals, scene.nodeById);
     this.drawAmbientParticles(signals);
@@ -481,8 +481,10 @@ export class CortexRenderer {
   private drawDocumentHull(
     scene: Scene,
     emphasis: Emphasis,
+    options: RenderOptions,
     camera: Camera
   ): void {
+    if ((options.sceneMode ?? "graph") !== "document") return;
     const expanded = scene.nodes.find(
       (node) => (node.kind ?? "concept") === "document" && node.expanded
     );

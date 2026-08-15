@@ -272,6 +272,13 @@ export function CortexPage() {
     () => data?.bucketDocumentMap ?? EMPTY_BUCKET_DOCUMENT_MAP,
     [data]
   );
+  const documentDomainById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const d of documents) {
+      m.set(d.documentId, String((d as any).domain ?? "general") || "general");
+    }
+    return m;
+  }, [documents]);
   const core = data?.core ?? null;
   const isEmpty = !map.loading && !map.error && documents.length === 0 && concepts.length === 0;
 
@@ -556,12 +563,33 @@ export function CortexPage() {
 
   const conceptEdges = useMemo<GraphEdge[]>(() => {
     return relationships
-      .filter(
-        (relationship) =>
-          visibleConceptIds.has(relationship.sourceBucket) &&
-          visibleConceptIds.has(relationship.targetBucket) &&
-          relationship.sourceBucket !== relationship.targetBucket
-      )
+      .filter((relationship) => {
+        if (
+          !visibleConceptIds.has(relationship.sourceBucket) ||
+          !visibleConceptIds.has(relationship.targetBucket) ||
+          relationship.sourceBucket === relationship.targetBucket
+        ) {
+          return false;
+        }
+        const sourceDocument = bucketDocumentMap[relationship.sourceBucket] ?? null;
+        const targetDocument = bucketDocumentMap[relationship.targetBucket] ?? null;
+        const isCrossDocument = Boolean(
+          sourceDocument && targetDocument && sourceDocument !== targetDocument
+        );
+        if (isCrossDocument) {
+          const sourceDomain = sourceDocument
+            ? documentDomainById.get(sourceDocument) ?? "general"
+            : "general";
+          const targetDomain = targetDocument
+            ? documentDomainById.get(targetDocument) ?? "general"
+            : "general";
+          // hide cross-domain noise; keep only very strong cross-domain links
+          if (sourceDomain !== targetDomain && relationship.confidence < 0.85) {
+            return false;
+          }
+        }
+        return true;
+      })
       .map((relationship) => {
         const sourceDocument = bucketDocumentMap[relationship.sourceBucket] ?? null;
         const targetDocument = bucketDocumentMap[relationship.targetBucket] ?? null;
@@ -577,7 +605,7 @@ export function CortexPage() {
           ),
         });
       });
-  }, [relationships, visibleConceptIds, bucketDocumentMap]);
+  }, [relationships, visibleConceptIds, bucketDocumentMap, documentDomainById]);
 
   const currentNodes = inDocumentView
     ? conceptNodes
