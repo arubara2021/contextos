@@ -147,6 +147,7 @@ function createCortexNode(input: {
   daysSinceAccess: number;
   createdAt: number;
   kind: CortexNodeKind;
+  domain?: string | null;
   documentId?: string | null;
   conceptCount?: number;
   connectedConceptCount?: number;
@@ -172,6 +173,7 @@ function createCortexNode(input: {
   return {
     ...base,
     kind: input.kind,
+    domain: input.domain ?? null,
     documentId: input.documentId ?? null,
     conceptCount: input.conceptCount,
     connectedConceptCount: input.connectedConceptCount,
@@ -406,6 +408,7 @@ export function CortexPage() {
           daysSinceAccess: daysSince(new Date(uploadedAt)),
           createdAt: uploadedAt,
           kind: "document",
+          domain: (document as any).domain ?? null,
           documentId: document.documentId,
           conceptCount,
           connectedConceptCount: document.connectedConceptCount ?? 0,

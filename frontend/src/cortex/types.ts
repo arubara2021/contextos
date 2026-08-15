@@ -24,6 +24,7 @@ export interface GraphNode {
   radius: number;
   held: boolean;
   kind?: CortexNodeKind;
+  domain?: string | null;
   documentId?: string | null;
   documentState?: CortexDocumentState;
   fileType?: string;
@@ -121,6 +122,7 @@ export function createGraphNode(input: {
   x?: number;
   y?: number;
   kind?: CortexNodeKind;
+  domain?: string | null;
   documentId?: string | null;
   documentState?: CortexDocumentState;
   fileType?: string;
@@ -152,6 +154,7 @@ export function createGraphNode(input: {
     radius: 14 + input.importance * 2.5,
     held: false,
     kind: input.kind ?? "concept",
+    domain: input.domain ?? null,
     documentId: input.documentId ?? null,
     documentState: input.documentState,
     fileType: input.fileType,

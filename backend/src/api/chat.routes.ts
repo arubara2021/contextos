@@ -103,7 +103,7 @@ async function getArchiveInventory(
     filename: string;
     memory_count: number;
   }>(
-    `SELECT d.document_id, d.filename, COUNT(b.bucket_id)::int AS memory_count
+    `SELECT d.document_id, d.filename, COALESCE(d.domain, 'general') AS domain, COUNT(b.bucket_id)::int AS memory_count
      FROM documents d
      LEFT JOIN buckets b ON b.document_id = d.document_id
      WHERE d.user_id = $1::uuid

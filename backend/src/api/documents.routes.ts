@@ -708,7 +708,6 @@ async function storeUploadedFile(params: {
 
   return `dbupload:${fileId}`;
 }
-
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024, files: 1 },
@@ -946,12 +945,13 @@ router.get(
         document_id: string;
         filename: string;
         file_type: string;
+        domain: string | null;
         uploaded_at: Date;
       }>(
-        `SELECT document_id, filename, file_type, uploaded_at
-         FROM documents
-         WHERE user_id = $1::uuid
-         ORDER BY uploaded_at DESC`,
+        `SELECT document_id, filename, file_type, domain, uploaded_at
+       FROM documents
+       WHERE user_id = $1::uuid
+       ORDER BY uploaded_at DESC`,
         [req.userId]
       );
 
@@ -970,6 +970,7 @@ router.get(
           documentId: doc.document_id,
           filename: doc.filename,
           fileType: doc.file_type,
+          domain: doc.domain ?? "general",
           uploadedAt: doc.uploaded_at.toISOString(),
         })),
         count: docs.rows.length,

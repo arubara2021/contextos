@@ -257,3 +257,5 @@ CREATE INDEX IF NOT EXISTS idx_buckets_normalized_lookup
 CREATE INDEX IF NOT EXISTS idx_buckets_user_normalized_lookup
   ON buckets (user_id, normalized) INCLUDE (bucket_id)
   WHERE user_id IS NOT NULL;
+  ALTER TABLE documents ADD COLUMN IF NOT EXISTS domain TEXT;
+CREATE INDEX IF NOT EXISTS idx_documents_domain ON documents (domain) WHERE domain IS NOT NULL;

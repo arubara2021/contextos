@@ -197,6 +197,14 @@ async function processJob(jobId: string, userId: string): Promise<void> {
         userId
     );
 
+    await query(
+        `UPDATE documents SET domain = $2, file_type = $3 WHERE document_id = $4::uuid`,
+        [
+            String(ingestionResult.domain ?? "general"),
+            String(ingestionResult.fieldType ?? "other"),
+            doc.document_id,
+        ]
+    ).catch(() => { });
     const connections = normConn(ingestionResult.connections);
     const relatedDocuments = normRelated(ingestionResult.relatedDocuments);
     const topConnectedMemories = normTop(ingestionResult.topConnectedMemories);

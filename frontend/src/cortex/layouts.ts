@@ -7,7 +7,7 @@ const GOLDEN = 2.399963229728653;
 const RING_LABELS = ["CORE", "FADING", "RIM"];
 const SLOT_GAP = 38;
 const CONCEPT_SLOT_GAP = 40;
-const DOC_SLOT_GAP = 82;
+
 const DESKTOP_DOC_WIDTH = 200;
 const DESKTOP_DOC_HEIGHT = 80;
 const MOBILE_DOC_WIDTH = 160;
@@ -335,47 +335,64 @@ function coreLayout(nodes: GraphNode[]): void {
   const coreNode = nodes.find((node) => (node.kind ?? "concept") === "core");
   const documents = nodes.filter((node) => (node.kind ?? "concept") === "document");
   const concepts = nodes.filter((node) => (node.kind ?? "concept") === "concept");
+
   if (coreNode) {
     pin(coreNode, 0, 0);
     coreNode.clusterId = "core";
     coreNode.clusterCenterX = 0;
     coreNode.clusterCenterY = 0;
   }
-  if (documents.length > 0) {
-    const sorted = documents
+
+  const docById = new Map<string, GraphNode>();
+  for (const d of documents) docById.set(d.id, d);
+
+  // Documents grouped into sectors by domain (topic)
+  const groups = new Map<string, GraphNode[]>();
+  for (const doc of documents) {
+    const domain = String((doc as any).domain ?? "general");
+    if (!groups.has(domain)) groups.set(domain, []);
+    groups.get(domain)!.push(doc);
+  }
+  const domainList = Array.from(groups.entries()).sort((a, b) =>
+    a[0].localeCompare(b[0])
+  );
+  const domainCount = Math.max(1, domainList.length);
+
+  domainList.forEach(([domain, docs], di) => {
+    const sector = -Math.PI / 2 + (di / domainCount) * TAU;
+    const sorted = docs
       .slice()
-      .sort(
-        (a, b) =>
-          (b.conceptCount ?? 0) - (a.conceptCount ?? 0) ||
-          a.label.localeCompare(b.label)
-      );
-    let placed = 0;
-    let ring = 0;
-    while (placed < sorted.length) {
-      const radius = 220 + ring * 190;
-      const remaining = sorted.slice(placed);
-      const maxSlot = Math.max(...remaining.map(docWidth)) + DOC_SLOT_GAP;
-      const capacity = Math.max(3, Math.floor((TAU * radius) / maxSlot));
-      const take = remaining.slice(0, capacity);
-      for (let i = 0; i < take.length; i++) {
-        const angle =
-          -Math.PI / 2 + ring * GOLDEN + ((i + 0.5) / take.length) * TAU;
-        pin(take[i], Math.cos(angle) * radius, Math.sin(angle) * radius);
-        take[i].clusterId = "core-documents";
-        take[i].clusterCenterX = 0;
-        take[i].clusterCenterY = 0;
-      }
-      placed += take.length;
-      ring += 1;
+      .sort((a, b) => (b.conceptCount ?? 0) - (a.conceptCount ?? 0));
+    sorted.forEach((doc, i) => {
+      const spread = sorted.length > 1 ? i / (sorted.length - 1) - 0.5 : 0;
+      const angle = sector + spread * 0.7;
+      const radius = 260 + (i % 2) * 170;
+      pin(doc, Math.cos(angle) * radius, Math.sin(angle) * radius);
+      doc.clusterId = `domain:${domain}`;
+      doc.clusterCenterX = Math.cos(sector) * 260;
+      doc.clusterCenterY = Math.sin(sector) * 260;
+    });
+  });
+
+  // Concepts packed around their own document = topic islands
+  const byDoc = new Map<string, GraphNode[]>();
+  const orphan: GraphNode[] = [];
+  for (const c of concepts) {
+    const did = String((c as any).documentId ?? "");
+    if (did && docById.has(did)) {
+      if (!byDoc.has(did)) byDoc.set(did, []);
+      byDoc.get(did)!.push(c);
+    } else {
+      orphan.push(c);
     }
   }
-  if (concepts.length > 0) {
-    if (!coreNode && documents.length === 0) {
-      constellation(concepts);
-      return;
-    }
-    const outer = 260 + Math.ceil(documents.length / 6) * 190 + 240;
-    packCluster(0, outer, concepts, "core-concepts");
+  for (const [did, members] of byDoc) {
+    const doc = docById.get(did);
+    if (!doc) continue;
+    packAroundCenter(doc.x, doc.y, doc.radius + 34, members, `doc:${did}`);
+  }
+  if (orphan.length > 0) {
+    packCluster(0, 620, orphan, "core-concepts");
   }
 }
 

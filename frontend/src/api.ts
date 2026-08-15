@@ -317,6 +317,7 @@ export interface CortexDocumentNode {
   documentId: string;
   filename: string;
   fileType: string;
+  domain: string | null;
   uploadedAt: string;
   conceptCount: number;
   averageStrength: number;
@@ -842,6 +843,7 @@ export const api = {
           documentId: document.documentId,
           filename: document.filename,
           fileType: document.fileType,
+          domain: (document as any).domain ?? null,
           uploadedAt: document.uploadedAt,
           conceptCount: documentBucketIds.size,
           averageStrength: strengthCount > 0 ? strengthSum / strengthCount : 0,

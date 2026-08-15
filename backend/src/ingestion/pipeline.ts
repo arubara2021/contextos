@@ -322,7 +322,7 @@ const DOMAIN_PATTERNS: Array<{ domain: string; patterns: RegExp[] }> = [
   },
 ];
 
-function detectDomainFromContent(text: string, filename: string): string {
+export function detectDomainFromContent(text: string, filename: string): string {
   const sample = text.toLowerCase().substring(0, 10000);
   const fn = filename.toLowerCase();
   const scores: Record<string, number> = {};
@@ -811,7 +811,8 @@ export class IngestionPipeline {
       topConnectedMemories: correlation.topConnectedMemories,
       extraction: this.buildExtractionMeta(extractionResult, rawConcepts),
     };
-
+    (payload as any).domain = domain;
+    (payload as any).fieldType = fieldType;
     return payload;
   }
 

@@ -16,6 +16,7 @@ export interface ArchiveInventoryItem {
   filename: string;
   memoryCount: number;
   topConcepts: string[];
+  domain?: string;
 }
 
 export interface PromptPair {
@@ -204,7 +205,7 @@ function buildInventorySystemPrompt(
         item.topConcepts.length > 0
           ? item.topConcepts.join(", ")
           : "no key concepts yet";
-      return `${i + 1}. ${item.filename} — ${item.memoryCount} memories. Key concepts: ${concepts}.`;
+      return `${i + 1}. ${item.filename} — ${item.memoryCount} memories. Topic: ${item.domain ?? "general"}. Key concepts: ${concepts}.`;
     })
     .join("\n");
   const totalMemories =
