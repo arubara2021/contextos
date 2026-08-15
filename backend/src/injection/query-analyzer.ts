@@ -911,6 +911,9 @@ export class QueryAnalyzer {
         "python",
         "react",
         "node",
+        "project",
+        "worker",
+        "github",
       ],
       medicine: [
         "patient",

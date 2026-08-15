@@ -549,14 +549,14 @@ export function CortexPage() {
   const currentNodes = inDocumentView
     ? conceptNodes
     : inCoreExpanded
-      ? conceptNodes
+      ? [...coreNodes, ...conceptNodes]
       : documents.length > 0
         ? coreNodes
         : fallbackNodes;
   const currentEdges = inDocumentView
     ? conceptEdges
     : inCoreExpanded
-      ? conceptEdges
+      ? [...coreEdges, ...conceptEdges]
       : documents.length > 0
         ? coreEdges
         : fallbackEdges;
@@ -564,7 +564,7 @@ export function CortexPage() {
   const sceneMode: CortexSceneMode = inDocumentView
     ? "document"
     : inCoreExpanded
-      ? "graph"
+      ? "core"
       : documents.length > 0
         ? "core"
         : "graph";

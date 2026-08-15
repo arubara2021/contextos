@@ -1270,36 +1270,42 @@ export class Retriever {
     if (!userId && !documentId) return [];
 
     try {
-      const values: unknown[] = [];
-      const clauses: string[] = ["importance >= 8", "strength >= 0.1"];
-
+      const domain = String(querySpec.domain ?? "general");
+      const vals: unknown[] = [];
+      const where: string[] = ["b.importance >= 8", "b.strength >= 0.1"];
       if (userId) {
-        values.push(userId);
-        clauses.push(`user_id = $${values.length}`);
+        vals.push(userId);
+        where.push(`b.user_id = $${vals.length}`);
       }
-
       if (documentId) {
-        values.push(documentId);
-        clauses.push(`document_id = $${values.length}`);
+        vals.push(documentId);
+        where.push(`b.document_id = $${vals.length}`);
       }
-
-      values.push(HIGH_IMPORTANCE_FALLBACK_LIMIT);
-      const limitParam = values.length;
+      vals.push(domain);
+      const domainParam = vals.length;
+      vals.push(HIGH_IMPORTANCE_FALLBACK_LIMIT);
+      const limitParam = vals.length;
       const rows = await queryMany<{ bucket_id: string }>(
         `SELECT bucket_id
-       FROM (
-         SELECT bucket_id, importance, strength, last_accessed,
-                ROW_NUMBER() OVER (
-                  PARTITION BY COALESCE(document_id::text, 'none')
-                  ORDER BY importance DESC, strength DESC, last_accessed DESC
-                ) AS per_doc_rank
-         FROM buckets
-         WHERE ${clauses.join(" AND ")}
-       ) ranked
-       WHERE per_doc_rank <= 4
-       ORDER BY importance DESC, strength DESC, last_accessed DESC
-       LIMIT $${limitParam}`,
-        values
+         FROM (
+           SELECT b.bucket_id,
+                  b.importance,
+                  b.strength,
+                  b.last_accessed,
+                  ROW_NUMBER() OVER (
+                    PARTITION BY COALESCE(b.document_id::text, 'none')
+                    ORDER BY b.importance DESC, b.strength DESC, b.last_accessed DESC
+                  ) AS per_doc_rank,
+                  CASE WHEN COALESCE(d.domain, 'general') = $${domainParam}
+                       THEN 0 ELSE 1 END AS domain_mismatch
+           FROM buckets b
+           LEFT JOIN documents d ON d.document_id = b.document_id
+           WHERE ${where.join(" AND ")}
+         ) ranked
+         WHERE per_doc_rank <= 4
+         ORDER BY domain_mismatch ASC, importance DESC, strength DESC, last_accessed DESC
+         LIMIT $${limitParam}`,
+        vals
       );
 
       return rows.map((row) => ({

@@ -366,33 +366,34 @@ function coreLayout(nodes: GraphNode[]): void {
     sorted.forEach((doc, i) => {
       const spread = sorted.length > 1 ? i / (sorted.length - 1) - 0.5 : 0;
       const angle = sector + spread * 0.7;
-      const radius = 260 + (i % 2) * 170;
+      const radius = 320 + (i % 2) * 190;
       pin(doc, Math.cos(angle) * radius, Math.sin(angle) * radius);
       doc.clusterId = `domain:${domain}`;
-      doc.clusterCenterX = Math.cos(sector) * 260;
-      doc.clusterCenterY = Math.sin(sector) * 260;
+      doc.clusterCenterX = Math.cos(sector) * 320;
+      doc.clusterCenterY = Math.sin(sector) * 320;
     });
   });
 
-  // Concepts packed around their own document = topic islands
+  // Concepts form ISOLATED islands around their own document
   const byDoc = new Map<string, GraphNode[]>();
   const orphan: GraphNode[] = [];
   for (const c of concepts) {
     const did = String((c as any).documentId ?? "");
-    if (did && docById.has(did)) {
-      if (!byDoc.has(did)) byDoc.set(did, []);
-      byDoc.get(did)!.push(c);
+    const key = did ? `doc:${did}` : "";
+    if (key && docById.has(key)) {
+      if (!byDoc.has(key)) byDoc.set(key, []);
+      byDoc.get(key)!.push(c);
     } else {
       orphan.push(c);
     }
   }
-  for (const [did, members] of byDoc) {
-    const doc = docById.get(did);
+  for (const [docKey, members] of byDoc) {
+    const doc = docById.get(docKey);
     if (!doc) continue;
-    packAroundCenter(doc.x, doc.y, doc.radius + 34, members, `doc:${did}`);
+    packAroundCenter(doc.x, doc.y, doc.radius + 34, members, `island:${docKey}`);
   }
   if (orphan.length > 0) {
-    packCluster(0, 620, orphan, "core-concepts");
+    packCluster(0, 680, orphan, "core-concepts");
   }
 }
 
