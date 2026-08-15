@@ -7,25 +7,17 @@ interface Star {
   seed: number;
   cold: boolean;
 }
-
-interface Stream {
-  ax: number;
-  ay: number;
-  cx: number;
-  cy: number;
-  bx: number;
-  by: number;
-  color: string;
-  alpha: number;
-  sparks: Array<{ offset: number; speed: number }>;
-}
-
-interface Satellite {
-  ring: number;
+interface NodeDef {
+  nx: number;
+  ny: number;
+  r: number;
+  heat: number;
   phase: number;
-  speed: number;
-  size: number;
-  color: string;
+}
+interface EdgeDef {
+  a: number;
+  b: number;
+  w: number;
 }
 
 function mulberry32(seed: number) {
@@ -39,6 +31,55 @@ function mulberry32(seed: number) {
   };
 }
 
+const NODES: NodeDef[] = [
+  { nx: 0.5, ny: 0.34, r: 6, heat: 1, phase: 0 },
+  { nx: 0.26, ny: 0.22, r: 3.6, heat: 0.85, phase: 1.1 },
+  { nx: 0.74, ny: 0.2, r: 3.2, heat: 0.7, phase: 2.2 },
+  { nx: 0.14, ny: 0.46, r: 2.7, heat: 0.5, phase: 3.1 },
+  { nx: 0.86, ny: 0.44, r: 2.9, heat: 0.55, phase: 4.2 },
+  { nx: 0.34, ny: 0.52, r: 2.5, heat: 0.42, phase: 5.1 },
+  { nx: 0.66, ny: 0.54, r: 2.6, heat: 0.46, phase: 0.6 },
+  { nx: 0.4, ny: 0.12, r: 2.2, heat: 0.34, phase: 1.8 },
+  { nx: 0.62, ny: 0.08, r: 2, heat: 0.3, phase: 2.9 },
+  { nx: 0.08, ny: 0.28, r: 1.8, heat: 0.24, phase: 3.8 },
+  { nx: 0.92, ny: 0.26, r: 1.8, heat: 0.24, phase: 4.7 },
+  { nx: 0.26, ny: 0.7, r: 2.1, heat: 0.3, phase: 5.6 },
+  { nx: 0.74, ny: 0.72, r: 2.2, heat: 0.33, phase: 0.3 },
+  { nx: 0.5, ny: 0.76, r: 1.8, heat: 0.22, phase: 1.4 },
+];
+
+const EDGES: EdgeDef[] = [
+  { a: 0, b: 1, w: 0.95 },
+  { a: 0, b: 2, w: 0.9 },
+  { a: 0, b: 5, w: 0.75 },
+  { a: 0, b: 6, w: 0.75 },
+  { a: 1, b: 7, w: 0.55 },
+  { a: 2, b: 8, w: 0.5 },
+  { a: 1, b: 3, w: 0.6 },
+  { a: 2, b: 4, w: 0.6 },
+  { a: 3, b: 5, w: 0.5 },
+  { a: 4, b: 6, w: 0.5 },
+  { a: 5, b: 11, w: 0.42 },
+  { a: 6, b: 12, w: 0.42 },
+  { a: 11, b: 13, w: 0.35 },
+  { a: 12, b: 13, w: 0.35 },
+  { a: 7, b: 8, w: 0.4 },
+  { a: 3, b: 9, w: 0.35 },
+  { a: 4, b: 10, w: 0.35 },
+  { a: 1, b: 2, w: 0.5 },
+  { a: 5, b: 6, w: 0.45 },
+];
+
+const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
+
+function heatRgb(heat: number): [number, number, number] {
+  return [
+    Math.round(lerp(143, 255, heat)),
+    Math.round(lerp(216, 177, heat)),
+    Math.round(lerp(210, 92, heat)),
+  ];
+}
+
 export function HeroGraph() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -47,7 +88,6 @@ export function HeroGraph() {
     const canvas = canvasRef.current;
     const wrap = wrapRef.current;
     if (!canvas || !wrap) return;
-
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
 
@@ -58,18 +98,10 @@ export function HeroGraph() {
     let H = 1;
     let dpr = 1;
     let stars: Star[] = [];
-    let streams: Stream[] = [];
     let pointerX = 0.5;
     let pointerY = 0.5;
     let visible = true;
     let raf = 0;
-
-    const satellites: Satellite[] = [
-      { ring: 0, phase: 0.6, speed: 0.9, size: 2.6, color: "255,177,92" },
-      { ring: 1, phase: 2.8, speed: 0.55, size: 2.2, color: "143,216,210" },
-      { ring: 1, phase: 4.4, speed: 0.55, size: 1.8, color: "255,138,61" },
-      { ring: 2, phase: 1.7, speed: 0.34, size: 2.0, color: "255,92,73" },
-    ];
 
     const build = () => {
       const rect = wrap.getBoundingClientRect();
@@ -78,9 +110,8 @@ export function HeroGraph() {
       dpr = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = Math.round(W * dpr);
       canvas.height = Math.round(H * dpr);
-
       const rnd = mulberry32(20260807);
-      const starCount = W < 640 ? 48 : 90;
+      const starCount = W < 640 ? 54 : 96;
       stars = [];
       for (let i = 0; i < starCount; i++) {
         stars.push({
@@ -91,47 +122,32 @@ export function HeroGraph() {
           cold: rnd() > 0.8,
         });
       }
-
-      streams = [
-        {
-          ax: -0.05, ay: 0.62, cx: 0.3, cy: 0.44, bx: 0.72, by: 0.5,
-          color: "255,138,61", alpha: 0.1,
-          sparks: [{ offset: 0.15, speed: 0.5 }, { offset: 0.6, speed: 0.42 }],
-        },
-        {
-          ax: -0.04, ay: 0.24, cx: 0.42, cy: 0.36, bx: 1.04, by: 0.3,
-          color: "143,216,210", alpha: 0.09,
-          sparks: [{ offset: 0.35, speed: 0.46 }],
-        },
-        {
-          ax: 0.2, ay: 1.05, cx: 0.55, cy: 0.7, bx: 1.05, by: 0.62,
-          color: "255,177,92", alpha: 0.07,
-          sparks: [{ offset: 0.8, speed: 0.38 }],
-        },
-      ];
     };
 
-    const quad = (s: Stream, t: number) => {
+    const quad = (
+      ax: number, ay: number,
+      cx: number, cy: number,
+      bx: number, by: number,
+      t: number
+    ) => {
       const u = 1 - t;
       return {
-        x: (u * u * s.ax + 2 * u * t * s.cx + t * t * s.bx) * W,
-        y: (u * u * s.ay + 2 * u * t * s.cy + t * t * s.by) * H,
+        x: u * u * ax + 2 * u * t * cx + t * t * bx,
+        y: u * u * ay + 2 * u * t * cy + t * t * by,
       };
     };
 
     const draw = (time: number) => {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
-
-      const parX = coarse ? 0 : (pointerX - 0.5) * 10;
-      const parY = coarse ? 0 : (pointerY - 0.5) * 8;
+      const parX = coarse ? 0 : (pointerX - 0.5) * 12;
+      const parY = coarse ? 0 : (pointerY - 0.5) * 9;
 
       const ribbons = [
-        { x: 0.22, y: 0.2, r: 0.62, c: "255,138,61", a: 0.075, ph: 0 },
-        { x: 0.78, y: 0.34, r: 0.55, c: "143,216,210", a: 0.05, ph: 2.1 },
-        { x: 0.55, y: 0.9, r: 0.7, c: "200,85,31", a: 0.06, ph: 4.2 },
+        { x: 0.24, y: 0.18, r: 0.62, c: "255,138,61", a: 0.08, ph: 0 },
+        { x: 0.78, y: 0.3, r: 0.55, c: "143,216,210", a: 0.05, ph: 2.1 },
+        { x: 0.55, y: 0.92, r: 0.7, c: "200,85,31", a: 0.06, ph: 4.2 },
       ];
-
       for (const rb of ribbons) {
         const ox = reduced ? 0 : Math.sin(time * 0.00006 + rb.ph) * W * 0.05;
         const oy = reduced ? 0 : Math.cos(time * 0.00005 + rb.ph) * H * 0.04;
@@ -154,103 +170,98 @@ export function HeroGraph() {
       }
       ctx.globalAlpha = 1;
 
-      for (const s of streams) {
-        ctx.strokeStyle = `rgba(${s.color},${s.alpha})`;
-        ctx.lineWidth = 1.1;
+      const pos = NODES.map((n) => {
+        const fx = reduced ? 0 : Math.sin(time * 0.00042 + n.phase) * 6;
+        const fy = reduced ? 0 : Math.cos(time * 0.00036 + n.phase * 1.7) * 5;
+        return { x: n.nx * W + fx + parX, y: n.ny * H + fy + parY };
+      });
+
+      // ---- edges (the cords) ----
+      for (let i = 0; i < EDGES.length; i++) {
+        const e = EDGES[i];
+        const a = pos[e.a];
+        const b = pos[e.b];
+        const na = NODES[e.a];
+        const nb = NODES[e.b];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = Math.max(Math.hypot(dx, dy), 1);
+        const cx = (a.x + b.x) / 2 + (-dy / dist) * dist * 0.14;
+        const cy = (a.y + b.y) / 2 + (dx / dist) * dist * 0.14;
+        const [r1, g1, b1] = heatRgb(na.heat);
+        const [r2, g2, b2] = heatRgb(nb.heat);
+        const grad = ctx.createLinearGradient(a.x, a.y, b.x, b.y);
+        grad.addColorStop(0, `rgba(${r1},${g1},${b1},${0.12 + e.w * 0.22})`);
+        grad.addColorStop(1, `rgba(${r2},${g2},${b2},${0.12 + e.w * 0.22})`);
+        ctx.strokeStyle = grad;
+        ctx.lineWidth = 0.8 + e.w * 1.1;
         ctx.beginPath();
-        const a = quad(s, 0);
-        const m = quad(s, 0.5);
-        const b = quad(s, 1);
-        ctx.moveTo(a.x + parX, a.y + parY);
-        ctx.quadraticCurveTo(m.x + parX, m.y + parY, b.x + parX, b.y + parY);
+        ctx.moveTo(a.x, a.y);
+        ctx.quadraticCurveTo(cx, cy, b.x, b.y);
         ctx.stroke();
 
         if (!reduced) {
-          for (const sp of s.sparks) {
-            const t = (time * 0.000045 * sp.speed + sp.offset) % 1;
-            for (let k = 0; k < 3; k++) {
-              const tt = t - k * 0.02;
-              if (tt < 0) continue;
-              const p = quad(s, tt);
-              const fade = (1 - k / 3) * Math.sin(Math.PI * t);
-              const rg = ctx.createRadialGradient(
-                p.x + parX, p.y + parY, 0,
-                p.x + parX, p.y + parY, 5 - k
-              );
-              rg.addColorStop(0, `rgba(${s.color},${0.85 * fade})`);
-              rg.addColorStop(1, `rgba(${s.color},0)`);
-              ctx.fillStyle = rg;
-              ctx.beginPath();
-              ctx.arc(p.x + parX, p.y + parY, 5 - k, 0, Math.PI * 2);
-              ctx.fill();
-            }
-          }
+          const t = (time * 0.00005 * (0.6 + e.w) + i * 0.13) % 1;
+          const p = quad(a.x, a.y, cx, cy, b.x, b.y, t);
+          const fade = Math.sin(Math.PI * t);
+          const pg = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 6);
+          pg.addColorStop(0, `rgba(255,241,204,${0.75 * fade})`);
+          pg.addColorStop(0.4, `rgba(${r1},${g1},${b1},${0.35 * fade})`);
+          pg.addColorStop(1, `rgba(${r1},${g1},${b1},0)`);
+          ctx.fillStyle = pg;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+          ctx.fill();
         }
       }
 
-      const portrait = H > W * 0.9;
-      const cx = (portrait ? 0.5 : 0.68) * W + parX;
-      const cy = (portrait ? 0.34 : 0.44) * H + parY;
-      const R = Math.min(W, H) * (portrait ? 0.2 : 0.17);
+      // ---- nodes ----
+      for (let i = 0; i < NODES.length; i++) {
+        const n = NODES[i];
+        const p = pos[i];
+        const [r, g, b] = heatRgb(n.heat);
+        const breathe = reduced ? 1 : 1 + 0.08 * Math.sin(time * 0.0014 + n.phase);
+        const rad = n.r * breathe;
 
-      const halo = ctx.createRadialGradient(cx, cy, 0, cx, cy, R * 3.1);
-      halo.addColorStop(0, "rgba(255,138,61,0.16)");
-      halo.addColorStop(0.5, "rgba(255,138,61,0.05)");
-      halo.addColorStop(1, "rgba(255,138,61,0)");
-      ctx.fillStyle = halo;
-      ctx.beginPath();
-      ctx.arc(cx, cy, R * 3.1, 0, Math.PI * 2);
-      ctx.fill();
+        const glow = ctx.createRadialGradient(p.x, p.y, rad * 0.3, p.x, p.y, rad * 4.2);
+        glow.addColorStop(0, `rgba(${r},${g},${b},0.5)`);
+        glow.addColorStop(1, "rgba(0,0,0,0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, rad * 4.2, 0, Math.PI * 2);
+        ctx.fill();
 
-      const rings = [1, 1.45, 1.9];
-      rings.forEach((mult, i) => {
-        ctx.strokeStyle = `rgba(236,229,218,${0.1 - i * 0.025})`;
+        const core = ctx.createRadialGradient(
+          p.x - rad * 0.3, p.y - rad * 0.35, rad * 0.1,
+          p.x, p.y, rad
+        );
+        core.addColorStop(0, "#FFF1CC");
+        core.addColorStop(1, `rgb(${r},${g},${b})`);
+        ctx.fillStyle = core;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, rad, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = `rgba(${r},${g},${b},0.35)`;
         ctx.lineWidth = 1;
-        ctx.setLineDash([2, 7]);
-        ctx.lineDashOffset = reduced ? 0 : time * 0.012 * (i % 2 === 0 ? 1 : -1);
         ctx.beginPath();
-        ctx.arc(cx, cy, R * mult, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, rad + 3, 0, Math.PI * 2);
         ctx.stroke();
-      });
-      ctx.setLineDash([]);
 
-      for (const sat of satellites) {
-        const ang = sat.phase + (reduced ? 0 : time * 0.00022 * sat.speed);
-        const rr = R * rings[sat.ring];
-        const x = cx + Math.cos(ang) * rr;
-        const y = cy + Math.sin(ang) * rr;
-        const g = ctx.createRadialGradient(x, y, 0, x, y, sat.size * 4);
-        g.addColorStop(0, `rgba(${sat.color},0.9)`);
-        g.addColorStop(1, `rgba(${sat.color},0)`);
-        ctx.fillStyle = g;
-        ctx.beginPath();
-        ctx.arc(x, y, sat.size * 4, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = `rgba(${sat.color},1)`;
-        ctx.beginPath();
-        ctx.arc(x, y, sat.size * 0.8, 0, Math.PI * 2);
-        ctx.fill();
+        if (i === 0) {
+          const rot = reduced ? 0.6 : time * 0.0004;
+          ctx.strokeStyle = "rgba(143,216,210,0.35)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y, rad * 2.4, rad * 0.9, rot, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.strokeStyle = "rgba(255,225,168,0.25)";
+          ctx.setLineDash([3, 6]);
+          ctx.beginPath();
+          ctx.ellipse(p.x, p.y, rad * 3.1, rad * 1.2, -rot * 0.7, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
       }
-
-      const breathe = reduced ? 1 : 1 + 0.05 * Math.sin(time * 0.0012);
-      const coreR = R * 0.34 * breathe;
-      const core = ctx.createRadialGradient(
-        cx - coreR * 0.3, cy - coreR * 0.35, coreR * 0.1,
-        cx, cy, coreR
-      );
-      core.addColorStop(0, "#FFF1CC");
-      core.addColorStop(0.55, "#FFB15C");
-      core.addColorStop(1, "#C8551F");
-      ctx.fillStyle = core;
-      ctx.beginPath();
-      ctx.arc(cx, cy, coreR, 0, Math.PI * 2);
-      ctx.fill();
-
-      ctx.strokeStyle = "rgba(255,177,92,0.35)";
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.arc(cx, cy, coreR + 7, 0, Math.PI * 2);
-      ctx.stroke();
     };
 
     const loop = (now: number) => {
@@ -264,7 +275,6 @@ export function HeroGraph() {
       pointerX = (e.clientX - rect.left) / rect.width;
       pointerY = (e.clientY - rect.top) / rect.height;
     };
-
     const onLeave = () => {
       pointerX = 0.5;
       pointerY = 0.5;
@@ -273,10 +283,8 @@ export function HeroGraph() {
     build();
     canvas.addEventListener("pointermove", onMove);
     canvas.addEventListener("pointerleave", onLeave);
-
     const ro = new ResizeObserver(build);
     ro.observe(wrap);
-
     const io = new IntersectionObserver((entries) => {
       visible = entries[0]?.isIntersecting ?? true;
     });
@@ -294,9 +302,7 @@ export function HeroGraph() {
         window.removeEventListener("resize", onResize);
       };
     }
-
     raf = requestAnimationFrame(loop);
-
     return () => {
       cancelAnimationFrame(raf);
       canvas.removeEventListener("pointermove", onMove);
