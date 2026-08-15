@@ -103,6 +103,23 @@ const CHITCHAT_PATTERNS: RegExp[] = [
 ];
 
 const ABSTRACT_QUERY_PHRASES: string[] = [
+  "connect the dots",
+  "connections between",
+  "how do they connect",
+  "how does it all connect",
+  "links between",
+  "tie together",
+  "my notes",
+  "my documents",
+  "my files",
+  "my uploads",
+  "my papers",
+  "everything i have",
+  "everything you know",
+  "what do you know",
+  "what do you remember",
+  "what is in my",
+  "all my",
   "main contribution",
   "main contributions",
   "primary contribution",
@@ -721,7 +738,7 @@ export class QueryAnalyzer {
     if (!chitchat) {
       try {
         domain = this.detectDomain(queryText);
-      } catch {}
+      } catch { }
     }
 
     const result: QuerySpec = {

@@ -416,7 +416,9 @@ export class Retriever {
     const baseCandidates = this.mergeAllResults(directMatches, graphExpanded);
 
     const highImportanceCandidates =
-      querySpec.isAbstractQuery || targetedTerms.length > 0
+      querySpec.isAbstractQuery ||
+        targetedTerms.length > 0 ||
+        directMatches.size === 0
         ? await this.highImportanceCandidates(
           querySpec,
           documentId,
@@ -939,13 +941,13 @@ export class Retriever {
     documentId?: string,
     targetedTerms?: string[]
   ): boolean {
+    // Rescue FIRST: if nothing matched directly, always fall back so a
+    // non-empty knowledge base never returns zero candidates.
+    if (directMatches.size === 0) return true;
     if (documentId && !querySpec.isAbstractQuery) return false;
-
     if (!querySpec.isAbstractQuery && querySpec.specificity >= 0.5) {
       return false;
     }
-
-    if (directMatches.size === 0) return true;
 
     if (targetedTerms && targetedTerms.length > 0 && directMatches.size < 6) {
       return true;
