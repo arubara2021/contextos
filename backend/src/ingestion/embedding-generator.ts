@@ -24,7 +24,7 @@ export class EmbeddingGenerator {
   constructor(embeddingClient: EmbeddingClient) {
     this.client = embeddingClient;
     this.maxRetries = 2;
-    this.retryDelayMs = 500;
+    this.retryDelayMs = 5000;
     this.concurrency = config.embedding.concurrency;
     this.maxTextLength = config.embedding.textMaxLength;
     this.configuredDimension = config.embedding.dimension;
@@ -237,6 +237,15 @@ export class EmbeddingGenerator {
 
         if (error instanceof AIError) {
           retryable = error.retryable;
+          // Force retry if the router put the provider on cooldown or rate limited
+          if (
+            !retryable &&
+            (error.message.toLowerCase().includes("cooling down") ||
+              error.code === "ALL_PROVIDERS_COOLDOWN" ||
+              error.message.toLowerCase().includes("rate limit"))
+          ) {
+            retryable = true;
+          }
         } else {
           const msg = lastError.message.toLowerCase();
           retryable =
