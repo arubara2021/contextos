@@ -23,34 +23,28 @@ function getStoredDemo(): StoredDemo | null {
     const raw = localStorage.getItem(DEMO_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as StoredDemo;
-
-    // Shared sandbox has no expiry — always valid
-    if (parsed.expiresAt === null) {
-      return parsed;
-    }
-
-    // Timed sandbox — check expiry
+    if (!parsed.token) return null;
     if (parsed.expiresAt && new Date(parsed.expiresAt).getTime() <= Date.now()) {
-      localStorage.removeItem(DEMO_STORAGE_KEY);
-      localStorage.removeItem(DEMO_TOKEN_KEY);
-      clearToken();
+      clearDemoStorage();
       return null;
     }
-
     return parsed;
   } catch {
     return null;
   }
 }
 
+function clearDemoStorage(): void {
+  localStorage.removeItem(DEMO_STORAGE_KEY);
+  localStorage.removeItem(DEMO_TOKEN_KEY);
+  clearToken();
+}
+
 export function useDemo() {
   const [state, setState] = useState<DemoState>(() => {
     const stored = getStoredDemo();
     if (stored) {
-      // Restore the saved token so API calls work
-      if (stored.token) {
-        setToken(stored.token, true);
-      }
+      setToken(stored.token, true);
       return {
         isDemo: true,
         expiresAt: stored.expiresAt,
@@ -67,9 +61,7 @@ export function useDemo() {
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const clearDemo = useCallback(() => {
-    localStorage.removeItem(DEMO_STORAGE_KEY);
-    localStorage.removeItem(DEMO_TOKEN_KEY);
-    clearToken();
+    clearDemoStorage();
     if (intervalRef.current) {
       clearInterval(intervalRef.current);
       intervalRef.current = null;
@@ -77,10 +69,25 @@ export function useDemo() {
     setState({ isDemo: false, expiresAt: null, remainingMs: 0, minting: false, error: null });
   }, []);
 
-  // Countdown timer — only for timed sandboxes, not shared
+  // Validate cached token once on mount. If the user was deleted or the
+  // JWT secret changed, self-heal instead of bouncing to the login page.
+  useEffect(() => {
+    if (!state.isDemo) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await api.auth.me();
+      } catch {
+        if (!cancelled) clearDemo();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state.isDemo, clearDemo]);
+
   useEffect(() => {
     if (!state.isDemo || !state.expiresAt) return;
-
     const tick = () => {
       const remaining = new Date(state.expiresAt!).getTime() - Date.now();
       if (remaining <= 0) {
@@ -90,7 +97,6 @@ export function useDemo() {
       }
       setState((s) => ({ ...s, remainingMs: remaining }));
     };
-
     tick();
     intervalRef.current = setInterval(tick, 1000);
     return () => {
@@ -104,31 +110,30 @@ export function useDemo() {
   const launchSandbox = useCallback(async (): Promise<boolean> => {
     setState((s) => ({ ...s, minting: true, error: null }));
     try {
-      // Check if we already have a valid sandbox token
       const existingDemo = getStoredDemo();
       if (existingDemo?.token) {
-        // Reuse existing sandbox — no API call needed
         setToken(existingDemo.token, true);
-        setState({
-          isDemo: true,
-          expiresAt: existingDemo.expiresAt,
-          remainingMs: existingDemo.expiresAt
-            ? Math.max(0, new Date(existingDemo.expiresAt).getTime() - Date.now())
-            : Infinity,
-          minting: false,
-          error: null,
-        });
-        return true;
+        try {
+          await api.auth.me(); // is this token still alive?
+          setState({
+            isDemo: true,
+            expiresAt: existingDemo.expiresAt,
+            remainingMs: existingDemo.expiresAt
+              ? Math.max(0, new Date(existingDemo.expiresAt).getTime() - Date.now())
+              : Infinity,
+            minting: false,
+            error: null,
+          });
+          return true;
+        } catch {
+          clearDemoStorage(); // dead token → mint a fresh one below
+        }
       }
 
-      // No existing sandbox — request one from backend
-      // Backend now returns the SAME shared user every time
       const data = await api.demo.startSandbox();
-
-      setToken(data.token, true); // always persist to localStorage
+      setToken(data.token, true);
       setStoredUser(data.user, true);
 
-      // Store sandbox info + token for reuse
       const demoInfo: StoredDemo = {
         expiresAt: data.expiresAt,
         userId: data.user.userId,
@@ -140,9 +145,7 @@ export function useDemo() {
       setState({
         isDemo: true,
         expiresAt: data.expiresAt,
-        remainingMs: data.expiresAt
-          ? data.ttlMinutes * 60 * 1000
-          : Infinity,
+        remainingMs: data.expiresAt ? data.ttlMinutes * 60 * 1000 : Infinity,
         minting: false,
         error: null,
       });
