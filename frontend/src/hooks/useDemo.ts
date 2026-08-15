@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, setToken, setStoredUser, clearToken, getToken } from "../api";
+import { api, setToken, setStoredUser, clearToken } from "../api";
 
 const DEMO_STORAGE_KEY = "contextos.demo";
 const DEMO_TOKEN_KEY = "contextos.demo.token";
