@@ -315,10 +315,14 @@ export function CortexPage() {
           accessCount: agg.count,
           daysSinceAccess: 0,
           createdAt: Date.now(),
-          kind: "domain",
+          kind: "document",
           domain: agg.domain,
           domainColor: DOMAIN_PALETTE[index % DOMAIN_PALETTE.length],
           conceptCount: agg.count,
+          connectedConceptCount: agg.count,
+          isolatedConceptCount: 0,
+          boxWidth: 240,
+          boxHeight: 92,
           expanded: selectedDomain === agg.domain,
         });
       }),
@@ -741,6 +745,13 @@ export function CortexPage() {
 
   const handleDocumentClick = (node: GraphNode) => {
     const cortexNode = node as CortexGraphNode;
+    if (node.id.startsWith("domain:")) {
+      clearHighlight();
+      select(null);
+      focus(null);
+      setSelectedDomain(cortexNode.domain ?? node.id.slice(7));
+      return;
+    }
     const documentId = cortexNode.documentId ?? (node.id.startsWith("doc:") ? node.id.slice(4) : null);
     if (documentId) openDocument(documentId);
   };

@@ -163,7 +163,7 @@ export function CortexCanvas(props: CortexCanvasProps) {
         : sceneModeRef.current === "document"
           ? "document"
           : sceneModeRef.current === "domain"
-            ? "domain"
+            ? "document"
             : layoutRef.current;
     applyLayout(sceneRef.current.nodes, mode);
   };
