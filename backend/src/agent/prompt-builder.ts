@@ -210,13 +210,20 @@ export class PromptBuilder {
       ? `Archive state: ${knowledgeBase.memoryCount} memories stored across ${knowledgeBase.documentCount} documents.`
       : "";
 
-    const isKnowledgeQuery = Boolean(
-      queryAnalysis?.isAbstractQuery &&
-      queryAnalysis?.specificity !== undefined &&
-      queryAnalysis.specificity < 0.2 &&
-      !queryAnalysis?.documentScoped &&
-      (queryAnalysis?.intent === "recall" || queryAnalysis?.intent === "explore")
-    );
+    const KNOWLEDGE_META_PATTERN =
+      /\b(summarize|summarise|overview|recap|connect|link|list|show|describe)\b[^.\n]{0,40}\b(my|the|all|any|recent|latest)\b[^.\n]{0,40}\b(documents?|docs?|notes?|files?|uploads?|papers?|archive|knowledge|memories)\b|\b(my|all|any|recent|latest)\b[^.\n]{0,30}\b(documents?|docs?|notes?|files?|uploads?|papers?|archive|knowledge|memories)\b|\bwhat do you (know|remember|have)\b|\bconnect the dots\b|\bhow much do you know\b/i;
+
+    const isKnowledgeQuery =
+      KNOWLEDGE_META_PATTERN.test(userMessage) ||
+      Boolean(
+        queryAnalysis?.isAbstractQuery &&
+        queryAnalysis?.specificity !== undefined &&
+        queryAnalysis.specificity < 0.2 &&
+        !queryAnalysis?.documentScoped &&
+        (queryAnalysis?.intent === "recall" ||
+          queryAnalysis?.intent === "explore" ||
+          queryAnalysis?.intent === "summarize")
+      );
 
     const isDocumentScoped = Boolean(
       queryAnalysis?.documentScoped
