@@ -18,14 +18,14 @@
     "seed-demo": "ts-node src/scripts/seed-demo.ts",
     "decay-scan": "ts-node src/scripts/run-decay-scan.ts",
     "export-memories": "ts-node src/scripts/export-memories.ts",
-    "import-conversations": "ts-node src/scripts/import-conversations.ts"
+    "import-conversations": "ts-node src/scripts/import-conversations.ts",
+    "worker": "ts-node --transpile-only src/worker.ts",
+    "worker:once": "ts-node --transpile-only src/worker.ts --single-run"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.600.0",
     "@aws-sdk/client-s3": "^3.1086.0",
     "@aws-sdk/s3-request-presigner": "^3.1086.0",
-    "@trigger.dev/sdk": "^3.3.17",
-    "@vercel/functions": "^1.5.0",
     "bcrypt": "^5.1.1",
     "compromise": "^14.16.0",
     "cors": "^2.8.5",

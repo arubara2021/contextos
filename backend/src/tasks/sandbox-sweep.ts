@@ -2,6 +2,7 @@ import { query, queryMany } from "../database";
 import logger from "../utils/logger";
 
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+const SHARED_SANDBOX_EMAIL = process.env.SANDBOX_SHARED_EMAIL ?? "shared-demo@contextos.local";
 
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -14,8 +15,8 @@ async function purgeSandbox(uid: string): Promise<void> {
 
   const bucketRows = await queryMany<{ bucket_id: string; canonical: string }>(
     `SELECT bucket_id, canonical FROM buckets
-     WHERE user_id = $1
-        OR ($2::uuid[] IS NOT NULL AND document_id = ANY($2::uuid[]))`,
+         WHERE user_id = $1
+            OR ($2::uuid[] IS NOT NULL AND document_id = ANY($2::uuid[]))`,
     [uid, docIds.length > 0 ? docIds : null]
   );
   const bucketIds = bucketRows.map((r) => r.bucket_id);
@@ -35,7 +36,7 @@ async function purgeSandbox(uid: string): Promise<void> {
   if (canonicals.length > 0) {
     await query(
       `DELETE FROM relationships
-       WHERE source_bucket = ANY($1::text[]) OR target_bucket = ANY($1::text[])`,
+             WHERE source_bucket = ANY($1::text[]) OR target_bucket = ANY($1::text[])`,
       [canonicals]
     );
   }
@@ -51,7 +52,11 @@ async function purgeSandbox(uid: string): Promise<void> {
 async function deleteExpiredSandboxes(): Promise<number> {
   const expired = await queryMany<{ user_id: string; email: string }>(
     `SELECT user_id, email FROM users
-     WHERE is_sandbox = true AND expires_at < now()`
+         WHERE is_sandbox = true
+           AND expires_at IS NOT NULL
+           AND expires_at < now()
+           AND email <> $1`,
+    [SHARED_SANDBOX_EMAIL]
   );
 
   if (expired.length === 0) return 0;
@@ -65,6 +70,7 @@ async function deleteExpiredSandboxes(): Promise<number> {
       email: sandbox.email,
     });
   }
+
   return totalCleaned;
 }
 

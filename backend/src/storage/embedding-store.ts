@@ -519,15 +519,22 @@ export class EmbeddingStore {
   async batchStoreEmbeddings(entries: Array<{ bucketId: string; vector: number[] }>): Promise<number> {
     if (entries.length === 0) return 0;
 
-    const valid: Array<{ bucketId: string; serialized: string }> = [];
+    const deduplicated = new Map<string, { bucketId: string; serialized: string }>();
+
     for (const e of entries) {
       if (!isValidUuid(e.bucketId)) continue;
       try {
         this.validateVector(e.vector);
-        valid.push({ bucketId: e.bucketId, serialized: this.serializeVector(e.vector) });
+        deduplicated.set(e.bucketId, {
+          bucketId: e.bucketId,
+          serialized: this.serializeVector(e.vector),
+        });
       } catch { /* skip invalid */ }
     }
-    if (valid.length === 0) return 0;
+
+    if (deduplicated.size === 0) return 0;
+
+    const valid = Array.from(deduplicated.values());
 
     try {
       const params: unknown[] = [];
@@ -539,13 +546,18 @@ export class EmbeddingStore {
       }
       await query(
         `INSERT INTO embeddings (bucket_id, vector) VALUES ${clauses.join(", ")}
-       ON CONFLICT (bucket_id) DO UPDATE SET vector = EXCLUDED.vector, created_at = now()`,
+ON CONFLICT (bucket_id) DO UPDATE SET vector = EXCLUDED.vector, created_at = now()`,
         params
       );
       return valid.length;
     } catch (error) {
       logger.error("batchStoreEmbeddings bulk failed", { error: (error as Error).message });
-      return 0;
+      for (const e of valid) {
+        try {
+          await this.storeEmbedding(e.bucketId, this.deserializeVector(e.serialized));
+        } catch { /* skip individual failures */ }
+      }
+      return valid.length;
     }
   }
 

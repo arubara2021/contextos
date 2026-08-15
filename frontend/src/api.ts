@@ -910,4 +910,4 @@ export const api = {
       }>("/demo/start", { method: "POST", auth: false });
     },
   },
-};
+}

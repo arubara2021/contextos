@@ -408,7 +408,7 @@ video {
   background:
     radial-gradient(320px 220px at 78% 0%, rgb(255 138 61 / 0.12), transparent 66%),
     linear-gradient(165deg, rgb(24 18 15 / 0.5), rgb(10 8 7 / 0.72));
-  padding: 36px;
+  padding: 32px;
   box-shadow:
     var(--glass-highlight),
     var(--shadow-lift),
@@ -416,8 +416,8 @@ video {
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
   display: grid;
-  grid-template-columns: 210px minmax(0, 1fr);
-  gap: 32px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 26px;
   align-items: center;
   align-self: center;
   width: 100%;
@@ -434,7 +434,7 @@ video {
 .demo-orbit {
   position: relative;
   width: 100%;
-  max-width: 210px;
+  max-width: 180px;
   aspect-ratio: 1;
   margin: 0 auto;
 }
@@ -510,6 +510,7 @@ video {
   gap: 14px;
   text-align: left;
   min-width: 0;
+  width: 100%;
 }
 
 .demo-console-body .demo-button {
@@ -555,6 +556,7 @@ video {
   justify-content: center;
   gap: 10px;
   width: min(100%, 360px);
+  min-height: 52px;
   padding: 16px 24px;
   border-radius: 999px;
   font-family: var(--font-mono);
@@ -855,6 +857,7 @@ video {
 
   .demo-orbit {
     max-width: 190px;
+    margin: 0;
   }
 }
 
@@ -939,6 +942,7 @@ video {
 
   .demo-orbit {
     max-width: 100px;
+    margin: 0;
   }
 
   .demo-orbit-core {
@@ -988,6 +992,7 @@ video {
   .demo-button {
     width: 100%;
     max-width: 100%;
+    min-height: 48px;
     padding: 14px 20px;
     font-size: 10px;
   }
@@ -1057,7 +1062,6 @@ vite-error-overlay,
   display: none !important;
 }
 
-/* === DEMO CARD FIX: Override cta-band centering on demo-shell === */
 .cta-band .section {
   max-width: 100%;
   padding-top: 0;

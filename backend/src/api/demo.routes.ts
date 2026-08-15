@@ -1,16 +1,16 @@
 import { Router, Request, Response } from "express";
-import { randomUUID } from "crypto";
 import { getDependencies } from "./dependencies";
 import { generateToken } from "../auth/tokens";
 import { toUserResponse } from "../models/user.model";
 import { rateLimitByKey } from "../auth/middleware";
+import config from "../config";
 import logger from "../utils/logger";
 
 const router = Router();
 
-const SANDBOX_TTL_MINUTES = 60;
-
-const demoLimiter = rateLimitByKey(3, 60 * 60 * 1000, (req) => {
+// Shared sandbox: everyone gets the SAME user
+// Rate limit is lenient because this endpoint is now idempotent
+const demoLimiter = rateLimitByKey(100, 60 * 60 * 1000, (req) => {
   return req.ip ?? req.socket.remoteAddress ?? "unknown";
 });
 
@@ -18,24 +18,23 @@ router.post("/start", demoLimiter, async (_req: Request, res: Response) => {
   try {
     const { userStore } = getDependencies();
 
-    const email = `sandbox-${randomUUID()}@contextos.local`;
-    const password = randomUUID();
+    const sharedEmail = config.sandbox.sharedEmail;
 
-    const user = await userStore.createSandboxUser({
-      email,
-      password,
-      displayName: "Sandbox Explorer",
-      ttlMinutes: SANDBOX_TTL_MINUTES,
-    });
+    if (!sharedEmail) {
+      res.status(500).json({ error: "Shared sandbox not configured" });
+      return;
+    }
+
+    // Always returns the SAME user — never creates a new one per device
+    const user = await userStore.getOrCreateSharedSandboxUser(sharedEmail);
 
     const token = generateToken(user.userId, user.email);
-    const expiresAt = new Date(Date.now() + SANDBOX_TTL_MINUTES * 60 * 1000);
 
-    res.status(201).json({
+    res.status(200).json({
       token,
       user: toUserResponse(user),
-      expiresAt: expiresAt.toISOString(),
-      ttlMinutes: SANDBOX_TTL_MINUTES,
+      expiresAt: null, // shared sandbox does not expire
+      ttlMinutes: 0,   // no TTL for shared
     });
   } catch (error) {
     logger.error("POST /demo/start failed", {

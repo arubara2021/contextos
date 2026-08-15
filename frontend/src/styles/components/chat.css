@@ -249,9 +249,9 @@
   margin: 16px auto 0;
   max-width: 50ch;
   font-size: 15px;
-  font-weight: 300;
+  font-weight: 400;
   line-height: 1.7;
-  color: var(--stone);
+  color: rgb(216 205 190 / 0.88);
 }
 
 .dive-trace {
@@ -331,7 +331,7 @@
   resize: none;
   color: var(--bone);
   font-size: 16px;
-  font-weight: 300;
+  font-weight: 400;
   line-height: 1.55;
   max-height: 170px;
   padding: 10px 2px;
@@ -542,7 +542,7 @@
 
 .dive-history-empty p {
   font-size: 13px;
-  font-weight: 300;
+  font-weight: 400;
   line-height: 1.6;
   color: var(--stone);
 }
@@ -609,7 +609,7 @@
   display: block;
   margin-top: 4px;
   font-size: 11.5px;
-  font-weight: 300;
+  font-weight: 400;
   color: var(--stone);
   white-space: nowrap;
   overflow: hidden;
@@ -852,11 +852,14 @@
 }
 
 .msg-text {
-  font-size: 15.5px;
-  font-weight: 300;
-  line-height: 1.72;
-  color: var(--bone);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.75;
+  letter-spacing: 0.0005em;
+  color: rgb(236 229 218 / 0.98);
   overflow-wrap: break-word;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
 }
 
 .msg.user .msg-text {
@@ -865,6 +868,9 @@
   background: linear-gradient(160deg, #241b15 0%, #1a1410 100%);
   border: 1px solid var(--line-strong);
   box-shadow: 0 12px 30px -16px rgb(0 0 0 / 0.7), var(--shadow-hairline);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.72;
 }
 
 .msg-actions {
@@ -935,16 +941,17 @@
 }
 
 .md p {
-  font-size: 15.5px;
-  font-weight: 300;
-  line-height: 1.74;
-  color: var(--bone);
+  font-size: 16px;
+  font-weight: 400;
+  line-height: 1.78;
+  letter-spacing: 0.0005em;
+  color: rgb(236 229 218 / 0.98);
 }
 
 .md p strong,
 .md li strong {
   color: var(--ember-hi);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .md em {
@@ -969,7 +976,7 @@
 .md h2,
 .md h3 {
   font-family: var(--font-display);
-  font-weight: 500;
+  font-weight: 600;
   color: var(--bone);
   line-height: 1.2;
   letter-spacing: -0.01em;
@@ -1034,10 +1041,10 @@
 }
 
 .md li {
-  font-size: 15px;
-  font-weight: 300;
-  line-height: 1.7;
-  color: var(--bone);
+  font-size: 15.5px;
+  font-weight: 400;
+  line-height: 1.74;
+  color: rgb(236 229 218 / 0.98);
 }
 
 .md li ul,
@@ -1048,7 +1055,7 @@
 
 .md .md-term {
   color: var(--ember-hi);
-  font-weight: 600;
+  font-weight: 700;
 }
 
 .md blockquote {
@@ -1056,6 +1063,7 @@
   padding: 4px 0 4px 14px;
   color: var(--stone);
   font-style: italic;
+  font-weight: 400;
 }
 
 .md hr {
@@ -1068,6 +1076,7 @@
 .md code {
   font-family: var(--font-mono);
   font-size: 12.5px;
+  font-weight: 400;
   color: var(--mineral);
   background: var(--soot);
   border: 1px solid var(--line-strong);
@@ -1082,6 +1091,7 @@
   padding: 0;
   color: inherit;
   font-size: inherit;
+  font-weight: 400;
 }
 
 .md-code {
@@ -1168,6 +1178,7 @@
   overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 12.5px;
+  font-weight: 400;
   line-height: 1.75;
   color: #e0d2c2;
 }
@@ -1395,6 +1406,7 @@
 .strip-item-name {
   flex: 1;
   font-size: 12.5px;
+  font-weight: 400;
   color: var(--bone);
   white-space: nowrap;
   overflow: hidden;
@@ -1892,14 +1904,16 @@ html.kb-open .dock-mobile {
   }
 
   .msg-text {
-    font-size: 14.5px;
-    line-height: 1.62;
+    font-size: 15px;
+    line-height: 1.68;
+    font-weight: 400;
   }
 
   .msg.user .msg-text {
     padding: 10px 13px;
     border-radius: 16px 16px 5px 16px;
-    font-size: 14.5px;
+    font-size: 15px;
+    font-weight: 400;
   }
 
   .msg-copy {
@@ -1917,13 +1931,15 @@ html.kb-open .dock-mobile {
   }
 
   .md p {
-    font-size: 14.5px;
-    line-height: 1.62;
+    font-size: 15px;
+    line-height: 1.68;
+    font-weight: 400;
   }
 
   .md li {
-    font-size: 14px;
-    line-height: 1.6;
+    font-size: 14.5px;
+    line-height: 1.66;
+    font-weight: 400;
   }
 
   .md h1 {
@@ -1967,6 +1983,7 @@ html.kb-open .dock-mobile {
     max-width: none;
     font-size: 13.5px;
     line-height: 1.6;
+    font-weight: 400;
   }
 
   .dive-empty .mx-auto {
@@ -1987,6 +2004,7 @@ html.kb-open .dock-mobile {
   .composer-shell textarea {
     font-size: 16px;
     padding: 9px 2px;
+    font-weight: 400;
   }
 
   .send-orb {
@@ -2152,23 +2170,27 @@ html.kb-open .dock-mobile {
 
 @media (max-width: 767px) {
   .msg-text {
-    font-size: 14.5px;
-    line-height: 1.62;
+    font-size: 15px;
+    line-height: 1.68;
+    font-weight: 400;
   }
 
   .msg.user .msg-text {
-    font-size: 14.5px;
+    font-size: 15px;
     padding: 10px 13px;
+    font-weight: 400;
   }
 
   .md p {
-    font-size: 14.5px;
-    line-height: 1.62;
+    font-size: 15px;
+    line-height: 1.68;
+    font-weight: 400;
   }
 
   .md li {
-    font-size: 14px;
-    line-height: 1.6;
+    font-size: 14.5px;
+    line-height: 1.66;
+    font-weight: 400;
   }
 
   .md h1 {

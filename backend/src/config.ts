@@ -46,6 +46,12 @@ const envSchema = z.object({
     .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
   DEV_BYPASS_TOKEN: z.string().default("dev-bypass-token"),
   DEV_BYPASS_EMAIL: z.string().default("demo@contextos.local"),
+  SANDBOX_SHARED_EMAIL: z.string().default("shared-demo@contextos.local"),
+  SANDBOX_SHARED_ENABLED: z
+    .string()
+    .default("true")
+    .transform((v) => ["true", "1", "yes"].includes(v.toLowerCase().trim())),
+  SANDBOX_TTL_MINUTES: z.coerce.number().default(60),
 
   AWS_REGION: z.string().default("us-east-1"),
   AWS_ACCESS_KEY_ID: z.string().default(""),
@@ -601,8 +607,8 @@ function firstAvailableModel(task: "chat" | "extraction" | "embedding"): string 
       task === "chat"
         ? providerChatModel(provider)
         : task === "extraction"
-        ? providerExtractionModel(provider)
-        : providerEmbeddingModel(provider);
+          ? providerExtractionModel(provider)
+          : providerEmbeddingModel(provider);
 
     if (modelId) {
       return buildModelUri(
@@ -752,6 +758,11 @@ const config = {
     devBypassAuth: env.DEV_BYPASS_AUTH,
     devBypassToken: env.DEV_BYPASS_TOKEN,
     devBypassEmail: env.DEV_BYPASS_EMAIL,
+  },
+  sandbox: {
+    sharedEmail: env.SANDBOX_SHARED_EMAIL,
+    sharedEnabled: env.SANDBOX_SHARED_ENABLED,
+    ttlMinutes: env.SANDBOX_TTL_MINUTES,
   },
 
   cors: {

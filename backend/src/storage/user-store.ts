@@ -82,6 +82,64 @@ export class UserStore {
       throw error;
     }
   }
+  async getOrCreateSharedSandboxUser(email: string): Promise<User> {
+    try {
+      // 1. Try to find existing shared user
+      const existing = await this.getUserByEmail(email);
+      if (existing) {
+        // Refresh the TTL so it stays alive
+        await query(
+          `UPDATE users
+                 SET expires_at = NULL, updated_at = now()
+                 WHERE user_id = $1 AND is_sandbox = true`,
+          [existing.userId]
+        );
+        logger.info("Shared sandbox user found, reusing", {
+          userId: existing.userId,
+          email: existing.email,
+        });
+        return existing;
+      }
+
+      // 2. Create the shared user if it doesn't exist
+      const userId = uuidv4();
+      const password = uuidv4(); // random password, nobody logs in directly
+      const passwordHash = await hashPassword(password);
+
+      const row = await queryOne<UserRow>(
+        `INSERT INTO users (user_id, email, password_hash, display_name, is_sandbox, expires_at, upload_count)
+             VALUES ($1, $2, $3, $4, true, NULL, 0)
+             RETURNING *`,
+        [userId, email.toLowerCase(), passwordHash, "ContextOS Shared Demo"]
+      );
+
+      if (!row) {
+        throw new Error("Failed to create shared sandbox user");
+      }
+
+      logger.info("Shared sandbox user created", {
+        userId: row.user_id,
+        email: row.email,
+      });
+
+      return mapRowToUser(row);
+    } catch (error) {
+      const err = error as Error;
+
+      // Race condition: another request created it at the same time
+      if (err.message.includes("duplicate") || err.message.includes("unique")) {
+        logger.info("Shared sandbox user created by concurrent request, fetching");
+        const existing = await this.getUserByEmail(email);
+        if (existing) return existing;
+      }
+
+      logger.error("getOrCreateSharedSandboxUser failed", {
+        email,
+        error: err.message,
+      });
+      throw error;
+    }
+  }
 
   async tryConsumeSandboxUpload(userId: string, cap: number): Promise<boolean> {
     try {

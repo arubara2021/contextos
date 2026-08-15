@@ -710,7 +710,7 @@ async function storeUploadedFile(params: {
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 4 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 50 * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, cb) => {
     const allowedMimes = [
       "text/plain",
@@ -784,18 +784,22 @@ router.post(
 
       const { userStore } = getDependencies();
       const owner = await userStore.getUserById(req.userId);
-
       if (owner?.isSandbox) {
-        const allowed = await userStore.tryConsumeSandboxUpload(
-          owner.userId,
-          SANDBOX_MAX_UPLOADS
-        );
+        const sharedEmail = process.env.SANDBOX_SHARED_EMAIL ?? "shared-demo@contextos.local";
+        const isSharedSandbox = owner.email === sharedEmail;
 
-        if (!allowed) {
-          res.status(429).json({
-            error: `Sandbox upload limit reached (${SANDBOX_MAX_UPLOADS} files max)`,
-          });
-          return;
+        // Shared sandbox has no upload cap — regular sandboxes keep the limit
+        if (!isSharedSandbox) {
+          const allowed = await userStore.tryConsumeSandboxUpload(
+            owner.userId,
+            SANDBOX_MAX_UPLOADS
+          );
+          if (!allowed) {
+            res.status(429).json({
+              error: `Sandbox upload limit reached (${SANDBOX_MAX_UPLOADS} files max)`,
+            });
+            return;
+          }
         }
       }
 
@@ -826,33 +830,7 @@ router.post(
         s3Key: fileLocator,
       });
 
-      // --- TRIGGER.DEV BACKGROUND PROCESSING ---
-      let triggerSucceeded = false;
-      try {
-        const { processDocumentTask } = await import("../tasks/document-processing.task");
-        await processDocumentTask.trigger({ jobId, userId: req.userId });
-        logger.info("=== TRIGGER.DEV SUCCESS ===", { jobId });
-        triggerSucceeded = true;
-      } catch (triggerError) {
-        logger.error("=== TRIGGER.DEV FAILED ===", {
-          jobId,
-          errorMessage: (triggerError as Error).message,
-        });
-      }
-
-      if (!triggerSucceeded) {
-        logger.info("=== FALLING BACK TO LOCAL PROCESSING ===", { jobId });
-        const work = processDocumentAsync(
-          jobId, req.userId, file.originalname, fileType, format,
-          mimeType, file.size, file.buffer
-        ).catch((err) => {
-          logger.error("Background processing unhandled error", { jobId, error: (err as Error).message });
-        });
-        try {
-          const { waitUntil } = await import("@vercel/functions");
-          waitUntil(work);
-        } catch { void work; }
-      }
+      logger.info("Document queued for worker processing", { jobId, userId: req.userId });
 
       res.status(202).json({
         jobId,
@@ -871,7 +849,7 @@ router.post(
       }
 
       if (err.message.includes("File too large")) {
-        res.status(413).json({ error: "File exceeds maximum size of 4MB (Vercel limit)" });
+        res.status(413).json({ error: "File exceeds maximum size of 50MB" });
         return;
       }
 

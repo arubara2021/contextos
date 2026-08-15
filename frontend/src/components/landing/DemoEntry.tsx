@@ -22,10 +22,10 @@ const FEATURES = [
 ];
 
 const LIMITS = [
-  { icon: "history" as const, label: "60 min" },
-  { icon: "upload" as const, label: "3 uploads" },
-  { icon: "dive" as const, label: "40 messages" },
-  { icon: "trash" as const, label: "auto-deleted" },
+  { icon: "history" as const, label: "shared" },
+  { icon: "upload" as const, label: "public uploads" },
+  { icon: "dive" as const, label: "public chat" },
+  { icon: "cortex" as const, label: "shared graph" },
 ];
 
 export function DemoEntry() {
@@ -71,7 +71,7 @@ export function DemoEntry() {
         </h2>
         <p className="sec-sub">
           Upload a paper, chat with it, and watch the graph build in real time.
-          Your own isolated memory space, alive for sixty minutes, then gone.
+          A shared public memory space. Upload, chat, and see what everyone builds together.
         </p>
       </div>
 
@@ -169,7 +169,7 @@ export function DemoEntry() {
               )}
 
               <p className="demo-note">
-                Nothing is saved. Nothing is shared. It disappears when the timer ends.
+                Shared public demo. Everyone sees the same memories, documents, and graph.
               </p>
             </div>
           </div>
