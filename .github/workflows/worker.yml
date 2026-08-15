@@ -38,4 +38,6 @@ jobs:
           BEDROCK_REGION: ${{ secrets.BEDROCK_REGION }}
           SANDBOX_SHARED_EMAIL: shared-demo@contextos.local
           SANDBOX_SHARED_ENABLED: "true"
+          AI_EXTRACTION_MODEL: sambanova://Meta-Llama-3.3-70B-Instruct
+          EMBEDDING_CONCURRENCY: "8"
         run: cd backend && npx ts-node --transpile-only src/worker.ts --single-run
