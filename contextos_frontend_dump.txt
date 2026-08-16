@@ -1,0 +1,743 @@
+================================================================================
+CONTEXTOS FRONTEND CODE DUMP
+================================================================================
+Total files: 3
+================================================================================
+
+
+================================================================================
+FILE: src/hooks/useAuth.ts
+================================================================================
+
+import { useCallback, useEffect, useState } from "react";
+import {
+  api,
+  ApiError,
+  clearToken,
+  getStoredUser,
+  getToken,
+  isTokenExpired,
+  setStoredUser,
+  setToken,
+  UNAUTHORIZED_EVENT,
+} from "../api";
+import type { User } from "../types";
+
+const DEV_BYPASS_AUTH = import.meta.env.VITE_DEV_BYPASS === "true";
+const DEV_TOKEN = "dev-bypass-token";
+const DEV_USER: User = {
+  userId: "dev-user-00000000-0000-0000-0000-000000000000",
+  email: "demo@contextos.local",
+  displayName: "Vera Lindqvist",
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString(),
+};
+
+const DEMO_STORAGE_KEY = "contextos.demo";
+const DEMO_TOKEN_KEY = "contextos.demo.token";
+
+if (DEV_BYPASS_AUTH) {
+  setToken(DEV_TOKEN);
+  setStoredUser(DEV_USER);
+}
+
+interface AuthState {
+  user: User | null;
+  token: string | null;
+  initializing: boolean;
+  authenticating: boolean;
+  error: string | null;
+}
+
+const EMPTY_STATE: AuthState = {
+  user: null,
+  token: null,
+  initializing: false,
+  authenticating: false,
+  error: null,
+};
+
+function getDemoToken(): string | null {
+  try {
+    return localStorage.getItem(DEMO_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function getDemoExpiry(): number | null {
+  try {
+    const raw = localStorage.getItem(DEMO_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { expiresAt?: string | null };
+    if (!parsed.expiresAt) return null;
+    const time = new Date(parsed.expiresAt).getTime();
+    return Number.isFinite(time) ? time : null;
+  } catch {
+    return null;
+  }
+}
+
+function isSandboxSession(): boolean {
+  const demoToken = getDemoToken();
+  if (!demoToken) return false;
+  const expiry = getDemoExpiry();
+  if (expiry !== null && expiry <= Date.now()) return false;
+  return true;
+}
+
+function clearDemoStorage(): void {
+  try {
+    localStorage.removeItem(DEMO_STORAGE_KEY);
+    localStorage.removeItem(DEMO_TOKEN_KEY);
+  } catch {
+    return;
+  }
+}
+
+function createInitialState(): AuthState {
+  if (DEV_BYPASS_AUTH) {
+    return {
+      user: DEV_USER,
+      token: DEV_TOKEN,
+      initializing: false,
+      authenticating: false,
+      error: null,
+    };
+  }
+  const storedToken = getToken();
+  if (storedToken && storedToken === DEV_TOKEN) {
+    clearToken();
+  }
+  const token = getToken();
+  const sandbox = isSandboxSession();
+  if (sandbox) {
+    const user = getStoredUser();
+    const demoToken = getDemoToken();
+    if (demoToken && demoToken !== token) {
+      setToken(demoToken, true);
+    }
+    return {
+      user,
+      token: demoToken ?? token,
+      initializing: Boolean(user),
+      authenticating: false,
+      error: null,
+    };
+  }
+  const expired = !token || isTokenExpired();
+  return {
+    user: expired ? null : getStoredUser(),
+    token: expired ? null : token,
+    initializing: !expired && Boolean(token),
+    authenticating: false,
+    error: null,
+  };
+}
+
+export function useAuth() {
+  const [state, setState] = useState<AuthState>(createInitialState);
+
+  useEffect(() => {
+    if (DEV_BYPASS_AUTH) {
+      return;
+    }
+    let cancelled = false;
+
+    const onUnauthorized = () => {
+      if (cancelled) return;
+      if (isSandboxSession()) {
+        const demoToken = getDemoToken();
+        const user = getStoredUser();
+        if (demoToken) {
+          setToken(demoToken, true);
+        }
+        setState((current) => ({
+          ...current,
+          user: user ?? current.user,
+          token: demoToken ?? current.token,
+          initializing: false,
+          authenticating: false,
+          error: null,
+        }));
+        return;
+      }
+      setState({ ...EMPTY_STATE });
+    };
+    window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+
+    const sandbox = isSandboxSession();
+    const token = getToken();
+    if (!sandbox && (!token || isTokenExpired())) {
+      clearToken();
+      setState({ ...EMPTY_STATE });
+      return () => {
+        window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+      };
+    }
+
+    api.auth
+      .me()
+      .then(({ user }) => {
+        if (cancelled) return;
+        setStoredUser(user);
+        setState((current) => ({
+          ...current,
+          user,
+          token: getToken(),
+          initializing: false,
+        }));
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        const is401 = err instanceof ApiError && err.status === 401;
+        const isUserDeleted = err instanceof ApiError && err.status === 404;
+        if ((is401 || isUserDeleted) && !isSandboxSession()) {
+          clearToken();
+          setState({ ...EMPTY_STATE });
+        } else {
+          setState((current) => ({
+            ...current,
+            initializing: false,
+            error: null,
+          }));
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
+    };
+  }, []);
+
+  const login = useCallback(
+    async (email: string, password: string, remember = true) => {
+      if (DEV_BYPASS_AUTH) {
+        setToken(DEV_TOKEN);
+        setStoredUser(DEV_USER);
+        setState((current) => ({
+          ...current,
+          user: DEV_USER,
+          token: DEV_TOKEN,
+          authenticating: false,
+          error: null,
+        }));
+        return DEV_USER;
+      }
+      setState((current) => ({
+        ...current,
+        authenticating: true,
+        error: null,
+      }));
+      try {
+        const normalizedEmail = email.trim().toLowerCase();
+        const { user, token } = await api.auth.login(normalizedEmail, password);
+        clearDemoStorage();
+        setToken(token, remember);
+        setStoredUser(user, remember);
+        setState((current) => ({
+          ...current,
+          user,
+          token,
+          authenticating: false,
+          error: null,
+        }));
+        return user;
+      } catch (error) {
+        const message =
+          error instanceof ApiError
+            ? error.status === 429
+              ? "Too many attempts. Please wait and try again."
+              : error.message
+            : "Login failed";
+        setState((current) => ({
+          ...current,
+          authenticating: false,
+          error: message,
+        }));
+        throw error;
+      }
+    },
+    []
+  );
+
+  const register = useCallback(
+    async (email: string, password: string, displayName: string) => {
+      if (DEV_BYPASS_AUTH) {
+        const user = {
+          ...DEV_USER,
+          displayName: displayName.trim() || DEV_USER.displayName,
+          email: email.trim().toLowerCase(),
+        };
+        setToken(DEV_TOKEN);
+        setStoredUser(user);
+        setState((current) => ({
+          ...current,
+          user,
+          token: DEV_TOKEN,
+          authenticating: false,
+          error: null,
+        }));
+        return user;
+      }
+      setState((current) => ({
+        ...current,
+        authenticating: true,
+        error: null,
+      }));
+      try {
+        const normalizedEmail = email.trim().toLowerCase();
+        const { user, token } = await api.auth.register(
+          normalizedEmail,
+          password,
+          displayName.trim()
+        );
+        clearDemoStorage();
+        setToken(token, true);
+        setStoredUser(user, true);
+        setState((current) => ({
+          ...current,
+          user,
+          token,
+          authenticating: false,
+          error: null,
+        }));
+        return user;
+      } catch (error) {
+        const message =
+          error instanceof ApiError
+            ? error.status === 429
+              ? "Too many attempts. Please wait and try again."
+              : error.message
+            : "Registration failed";
+        setState((current) => ({
+          ...current,
+          authenticating: false,
+          error: message,
+        }));
+        throw error;
+      }
+    },
+    []
+  );
+
+  const logout = useCallback(() => {
+    if (DEV_BYPASS_AUTH) return;
+    clearDemoStorage();
+    clearToken();
+    setState({ ...EMPTY_STATE });
+  }, []);
+
+  const updateProfile = useCallback(
+    async (params: { email?: string; displayName?: string }) => {
+      if (DEV_BYPASS_AUTH) {
+        const user = { ...DEV_USER, ...params } as User;
+        setStoredUser(user);
+        setState((current) => ({ ...current, user }));
+        return user;
+      }
+      const { user } = await api.auth.updateMe(params);
+      setStoredUser(user);
+      setState((current) => ({ ...current, user }));
+      return user;
+    },
+    []
+  );
+
+  const updatePassword = useCallback(
+    (currentPassword: string, newPassword: string) => {
+      if (DEV_BYPASS_AUTH) {
+        return Promise.resolve({ message: "Password updated (dev mode)" });
+      }
+      return api.auth.updatePassword(currentPassword, newPassword);
+    },
+    []
+  );
+
+  const clearError = useCallback(() => {
+    setState((current) => ({ ...current, error: null }));
+  }, []);
+
+  return {
+    ...state,
+    isAuthenticated: Boolean(state.token && state.user),
+    login,
+    register,
+    logout,
+    updateProfile,
+    updatePassword,
+    clearError,
+  };
+}
+
+
+================================================================================
+FILE: src/hooks/useDemo.ts
+================================================================================
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { api, setToken, setStoredUser, clearToken } from "../api";
+
+const DEMO_STORAGE_KEY = "contextos.demo";
+const DEMO_TOKEN_KEY = "contextos.demo.token";
+
+interface DemoState {
+  isDemo: boolean;
+  expiresAt: string | null;
+  remainingMs: number;
+  minting: boolean;
+  error: string | null;
+}
+
+interface StoredDemo {
+  expiresAt: string | null;
+  userId: string;
+  token: string;
+}
+
+function getStoredDemo(): StoredDemo | null {
+  try {
+    const raw = localStorage.getItem(DEMO_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredDemo;
+    if (!parsed.token) return null;
+    if (parsed.expiresAt && new Date(parsed.expiresAt).getTime() <= Date.now()) {
+      clearDemoStorage();
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function clearDemoStorage(): void {
+  localStorage.removeItem(DEMO_STORAGE_KEY);
+  localStorage.removeItem(DEMO_TOKEN_KEY);
+  clearToken();
+}
+
+export function useDemo() {
+  const [state, setState] = useState<DemoState>(() => {
+    const stored = getStoredDemo();
+    if (stored) {
+      setToken(stored.token, true);
+      return {
+        isDemo: true,
+        expiresAt: stored.expiresAt,
+        remainingMs: stored.expiresAt
+          ? Math.max(0, new Date(stored.expiresAt).getTime() - Date.now())
+          : Infinity,
+        minting: false,
+        error: null,
+      };
+    }
+    return { isDemo: false, expiresAt: null, remainingMs: 0, minting: false, error: null };
+  });
+
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const clearDemo = useCallback(() => {
+    clearDemoStorage();
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+    setState({ isDemo: false, expiresAt: null, remainingMs: 0, minting: false, error: null });
+  }, []);
+
+  // Validate cached token once on mount. If the user was deleted or the
+  // JWT secret changed, self-heal instead of bouncing to the login page.
+  useEffect(() => {
+    if (!state.isDemo) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        await api.auth.me();
+      } catch {
+        if (!cancelled) clearDemo();
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [state.isDemo, clearDemo]);
+
+  useEffect(() => {
+    if (!state.isDemo || !state.expiresAt) return;
+    const tick = () => {
+      const remaining = new Date(state.expiresAt!).getTime() - Date.now();
+      if (remaining <= 0) {
+        clearDemo();
+        window.location.href = "/";
+        return;
+      }
+      setState((s) => ({ ...s, remainingMs: remaining }));
+    };
+    tick();
+    intervalRef.current = setInterval(tick, 1000);
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [state.isDemo, state.expiresAt, clearDemo]);
+
+  const launchSandbox = useCallback(async (): Promise<boolean> => {
+    setState((s) => ({ ...s, minting: true, error: null }));
+    try {
+      const existingDemo = getStoredDemo();
+      if (existingDemo?.token) {
+        setToken(existingDemo.token, true);
+        try {
+          await api.auth.me(); // is this token still alive?
+          setState({
+            isDemo: true,
+            expiresAt: existingDemo.expiresAt,
+            remainingMs: existingDemo.expiresAt
+              ? Math.max(0, new Date(existingDemo.expiresAt).getTime() - Date.now())
+              : Infinity,
+            minting: false,
+            error: null,
+          });
+          return true;
+        } catch {
+          clearDemoStorage(); // dead token → mint a fresh one below
+        }
+      }
+
+      const data = await api.demo.startSandbox();
+      setToken(data.token, true);
+      setStoredUser(data.user, true);
+
+      const demoInfo: StoredDemo = {
+        expiresAt: data.expiresAt,
+        userId: data.user.userId,
+        token: data.token,
+      };
+      localStorage.setItem(DEMO_STORAGE_KEY, JSON.stringify(demoInfo));
+      localStorage.setItem(DEMO_TOKEN_KEY, data.token);
+
+      setState({
+        isDemo: true,
+        expiresAt: data.expiresAt,
+        remainingMs: data.expiresAt ? data.ttlMinutes * 60 * 1000 : Infinity,
+        minting: false,
+        error: null,
+      });
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to launch sandbox";
+      setState((s) => ({ ...s, minting: false, error: message }));
+      return false;
+    }
+  }, []);
+
+  const formattedRemaining = (() => {
+    if (!state.expiresAt) return "∞";
+    const totalSec = Math.floor(state.remainingMs / 1000);
+    const min = Math.floor(totalSec / 60);
+    const sec = totalSec % 60;
+    return `${String(min).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  })();
+
+  return {
+    ...state,
+    formattedRemaining,
+    launchSandbox,
+    clearDemo,
+    isDemoActive: state.isDemo && (state.remainingMs > 0 || !state.expiresAt),
+  };
+}
+
+
+================================================================================
+FILE: src/auth/LoginPage.tsx
+================================================================================
+
+import { useEffect, useState, type FormEvent } from "react";
+import { Link, useLocation, useNavigate } from "react-router-dom";
+import { useAuthContext } from "./AuthProvider";
+import { ROUTES } from "../constants";
+import { AuthLayout } from "../components/auth/AuthLayout";
+import { AuthBrandScene } from "../components/auth/AuthBrandScene";
+import { AuthFormPanel } from "../components/auth/AuthFormPanel";
+import { AuthField } from "../components/auth/AuthField";
+import { AuthPasswordField } from "../components/auth/AuthPasswordField";
+
+export function LoginPage() {
+  const { login, isAuthenticated, authenticating, error, clearError } =
+    useAuthContext();
+
+  const navigate = useNavigate();
+  const location = useLocation();
+
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [fieldErrors, setFieldErrors] = useState<{
+    email?: string;
+    password?: string;
+  }>({});
+
+  const from = (location.state as { from?: string } | null)?.from ?? ROUTES.dive;
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate(from, { replace: true });
+    }
+  }, [isAuthenticated, navigate, from]);
+
+  const validate = () => {
+    const next: {
+      email?: string;
+      password?: string;
+    } = {};
+
+    const normalizedEmail = email.trim();
+
+    if (!normalizedEmail) {
+      next.email = "Email is required";
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      next.email = "Enter a valid email address";
+    }
+
+    if (!password) {
+      next.password = "Password is required";
+    }
+
+    setFieldErrors(next);
+    return Object.keys(next).length === 0;
+  };
+
+  const handleSubmit = async (event: FormEvent) => {
+    event.preventDefault();
+    clearError();
+
+    if (!validate()) {
+      return;
+    }
+
+    try {
+      await login(email.trim(), password);
+      navigate(from, { replace: true });
+    } catch {
+      return;
+    }
+  };
+
+  if (isAuthenticated) {
+    return null;
+  }
+
+  return (
+    <AuthLayout
+      brand={
+        <AuthBrandScene
+          kicker="Persistent memory for AI"
+          title={
+            <>
+              Memories that don't{" "}
+              <em className="font-normal italic text-ember-hi">fade.</em>
+            </>
+          }
+          subtitle="Documents and conversations become living knowledge — extracted once, retrieved forever, and honest about what is slipping away."
+          chips={["Extract once", "Retrieve forever", "Decay honestly"]}
+        />
+      }
+    >
+      <AuthFormPanel
+        kicker="Sign in"
+        title={
+          <>
+            Welcome <em className="font-normal italic text-ember-hi">back.</em>
+          </>
+        }
+        subtitle="Your archive kept everything. It waited."
+      >
+        <form onSubmit={handleSubmit} className="flex flex-col gap-5" noValidate>
+          {error && (
+            <div
+              className="fx-rise rounded-2xl border border-flare/40 bg-flare/10 px-4 py-3 text-[13px] text-flare"
+              role="alert"
+            >
+              {error}
+            </div>
+          )}
+
+          <AuthField
+            label="Email"
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            placeholder="you@archive.dev"
+            value={email}
+            onChange={(event) => {
+              setEmail(event.target.value);
+
+              if (fieldErrors.email) {
+                setFieldErrors((current) => ({ ...current, email: undefined }));
+              }
+
+              if (error) {
+                clearError();
+              }
+            }}
+            error={fieldErrors.email}
+          />
+
+          <AuthPasswordField
+            label="Password"
+            autoComplete="current-password"
+            placeholder="••••••••••"
+            value={password}
+            onChange={(event) => {
+              setPassword(event.target.value);
+
+              if (fieldErrors.password) {
+                setFieldErrors((current) => ({
+                  ...current,
+                  password: undefined,
+                }));
+              }
+
+              if (error) {
+                clearError();
+              }
+            }}
+            error={fieldErrors.password}
+          />
+
+          <button
+            type="submit"
+            className="btn btn-primary h-[52px] w-full rounded-2xl text-[15px]"
+            disabled={authenticating}
+          >
+            {authenticating ? (
+              <span className="flex items-center gap-2">
+                <span className="h-1.5 w-1.5 animate-ping rounded-full bg-current" />
+                Opening the archive…
+              </span>
+            ) : (
+              "Enter the archive"
+            )}
+          </button>
+
+          <div className="form-divider">New here</div>
+
+          <Link
+            to={ROUTES.signup}
+            className="btn btn-ghost h-[48px] w-full rounded-2xl"
+          >
+            Create an account
+          </Link>
+        </form>
+      </AuthFormPanel>
+    </AuthLayout>
+  );
+}
+
+
+================================================================================
+END OF FRONTEND DUMP
+================================================================================

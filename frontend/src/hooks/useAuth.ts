@@ -136,19 +136,26 @@ export function useAuth() {
     const onUnauthorized = () => {
       if (cancelled) return;
       if (isSandboxSession()) {
-        const demoToken = getDemoToken();
-        const user = getStoredUser();
-        if (demoToken) {
-          setToken(demoToken, true);
-        }
-        setState((current) => ({
-          ...current,
-          user: user ?? current.user,
-          token: demoToken ?? current.token,
-          initializing: false,
-          authenticating: false,
-          error: null,
-        }));
+        void api.demo
+          .startSandbox()
+          .then((data) => {
+            if (cancelled) return;
+            setToken(data.token, true);
+            setStoredUser(data.user, true);
+            localStorage.setItem(DEMO_TOKEN_KEY, data.token);
+            setState((current) => ({
+              ...current,
+              user: data.user,
+              token: data.token,
+              initializing: false,
+              authenticating: false,
+              error: null,
+            }));
+          })
+          .catch(() => {
+            if (cancelled) return;
+            setState((current) => ({ ...current, initializing: false }));
+          });
         return;
       }
       setState({ ...EMPTY_STATE });
@@ -165,8 +172,20 @@ export function useAuth() {
       };
     }
 
-    api.auth
-      .me()
+    const heal =
+      sandbox && (!token || isTokenExpired())
+        ? api.demo
+          .startSandbox()
+          .then((data) => {
+            setToken(data.token, true);
+            setStoredUser(data.user, true);
+            localStorage.setItem(DEMO_TOKEN_KEY, data.token);
+          })
+          .catch(() => undefined)
+        : Promise.resolve();
+
+    heal
+      .then(() => api.auth.me())
       .then(({ user }) => {
         if (cancelled) return;
         setStoredUser(user);

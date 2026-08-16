@@ -27,8 +27,12 @@ router.post("/start", demoLimiter, async (_req: Request, res: Response) => {
 
     // Always returns the SAME user — never creates a new one per device
     const user = await userStore.getOrCreateSharedSandboxUser(sharedEmail);
-
-    const token = generateToken(user.userId, user.email);
+    const isShared = user.email === sharedEmail;
+    const token = generateToken(
+      user.userId,
+      user.email,
+      isShared ? { expiresIn: "365d" } : undefined
+    );
 
     res.status(200).json({
       token,

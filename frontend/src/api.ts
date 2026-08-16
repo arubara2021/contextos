@@ -183,6 +183,34 @@ function buildQuery(
   return queryString ? `?${queryString}` : "";
 }
 
+async function refreshSandboxSession(): Promise<boolean> {
+  try {
+    const raw = localStorage.getItem("contextos.demo");
+    if (!raw) return false;
+    const response = await fetch(`${BASE_URL}/demo/start`, { method: "POST" });
+    if (!response.ok) return false;
+    const data = (await response.json()) as {
+      token: string;
+      user: User;
+      expiresAt: string | null;
+    };
+    setToken(data.token, true);
+    setStoredUser(data.user, true);
+    localStorage.setItem("contextos.demo.token", data.token);
+    localStorage.setItem(
+      "contextos.demo",
+      JSON.stringify({
+        expiresAt: data.expiresAt ?? null,
+        userId: data.user.userId,
+        token: data.token,
+      })
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const {
     method = "GET",
@@ -191,13 +219,15 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     auth = true,
     timeout,
   } = options;
-
   if (auth) {
     const currentToken = getToken();
     if (!currentToken || isTokenExpired()) {
-      clearToken();
-      window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
-      throw new ApiError(401, "Session expired");
+      const healed = await refreshSandboxSession();
+      if (!healed) {
+        clearToken();
+        window.dispatchEvent(new CustomEvent(UNAUTHORIZED_EVENT));
+        throw new ApiError(401, "Session expired");
+      }
     }
   }
 

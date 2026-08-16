@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, setToken, setStoredUser, clearToken } from "../api";
+import { api, ApiError, setToken, setStoredUser, clearToken } from "../api";
 
 const DEMO_STORAGE_KEY = "contextos.demo";
 const DEMO_TOKEN_KEY = "contextos.demo.token";
@@ -77,8 +77,11 @@ export function useDemo() {
     (async () => {
       try {
         await api.auth.me();
-      } catch {
-        if (!cancelled) clearDemo();
+      } catch (err) {
+        if (!cancelled) {
+          const status = err instanceof ApiError ? err.status : 0;
+          if (status === 401 || status === 404) clearDemo();
+        }
       }
     })();
     return () => {
