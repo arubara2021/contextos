@@ -333,21 +333,9 @@ export class Retriever {
         )
         : await this.vectorSearchScoped(queryText, documentId, searchLimit);
 
-      const floored = scopedResults.filter(
+      vectorResults = scopedResults.filter(
         (r) => r.similarity >= SCOPED_MIN_SIMILARITY
       );
-
-      let usedScoped = floored;
-
-      if (usedScoped.length === 0) {
-        if (querySpec.isAbstractQuery || targetedTerms.length > 0) {
-          usedScoped = scopedResults.slice(0, 10);
-        } else {
-          return [];
-        }
-      }
-
-      vectorResults = usedScoped;
 
       textResults = await this.textSearchUser(
         textTerms,

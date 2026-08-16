@@ -254,6 +254,8 @@ export function CortexPage() {
   const [layout, setLayout] = useState<LayoutMode>(
     () => (localStorage.getItem(STORAGE_KEYS.cortexLayout) as LayoutMode) || "constellation"
   );
+  const [selectedDomain, setSelectedDomain] = useState<string | null>(null);
+  const [showBridges, setShowBridges] = useState(false);
   const [fitSignal, setFitSignal] = useState(0);
   const [statusIdle, setStatusIdle] = useState(true);
   const statusTimerRef = useRef<number | null>(null);
@@ -316,7 +318,7 @@ export function CortexPage() {
 
   useEffect(() => {
     setFitSignal((current) => current + 1);
-  }, [viewMode, selectedDocumentId, searchOpen, filtersOpen, coreExpanded]);
+  }, [viewMode, selectedDocumentId, searchOpen, filtersOpen, coreExpanded, selectedDomain]);
 
   useEffect(() => {
     const term = debouncedSearch.trim();
@@ -388,8 +390,9 @@ export function CortexPage() {
   );
 
   const inDocumentView = viewMode === "document" && activeDocument !== null;
-  const inCoreExpanded = coreExpanded && !inDocumentView;
-  const inDeepView = inDocumentView || inCoreExpanded;
+  const inDomainView = selectedDomain !== null && !inDocumentView;
+  const inCoreExpanded = coreExpanded && !inDocumentView && !inDomainView;
+  const inDeepView = inDocumentView || inCoreExpanded || inDomainView;
 
   const coreNodes = useMemo<CortexGraphNode[]>(() => {
     const nodes: CortexGraphNode[] = [];
@@ -524,7 +527,18 @@ export function CortexPage() {
     return concepts.filter((concept) => concept.documentId === activeDocument.documentId);
   }, [activeDocument, concepts]);
 
-  const scopedConcepts = inDocumentView ? documentConcepts : concepts;
+  const domainConcepts = useMemo(() => {
+    if (!selectedDomain) return EMPTY_CONCEPTS;
+    return concepts.filter((concept) => {
+      if (!concept.documentId) return false;
+      return (documentDomainById.get(concept.documentId) ?? "general") === selectedDomain;
+    });
+  }, [selectedDomain, concepts, documentDomainById]);
+  const scopedConcepts = inDocumentView
+    ? documentConcepts
+    : inDomainView
+      ? domainConcepts
+      : concepts;
 
   const visibleConcepts = useMemo(
     () =>
@@ -584,7 +598,7 @@ export function CortexPage() {
             ? documentDomainById.get(targetDocument) ?? "general"
             : "general";
           // hide cross-domain noise; keep only very strong cross-domain links
-          if (sourceDomain !== targetDomain && relationship.confidence < 0.85) {
+          if (sourceDomain !== targetDomain && !showBridges) {
             return false;
           }
         }
@@ -605,26 +619,46 @@ export function CortexPage() {
           ),
         });
       });
-  }, [relationships, visibleConceptIds, bucketDocumentMap, documentDomainById]);
+  }, [relationships, visibleConceptIds, bucketDocumentMap, documentDomainById, showBridges]);
 
+  const domainCoreNodes = useMemo<CortexGraphNode[]>(() => {
+    if (!selectedDomain) return coreNodes;
+    return coreNodes.filter((node) => {
+      if (node.kind === "domain") return node.domain === selectedDomain;
+      if (node.kind === "document") {
+        return (
+          (documentDomainById.get(node.documentId ?? "") ?? "general") ===
+          selectedDomain
+        );
+      }
+      return true;
+    });
+  }, [selectedDomain, coreNodes, documentDomainById]);
+  const domainCoreEdges = useMemo<GraphEdge[]>(() => {
+    if (!selectedDomain) return coreEdges;
+    return coreEdges.filter((edge) => edge.source === `domain:${selectedDomain}`);
+  }, [selectedDomain, coreEdges]);
   const currentNodes = inDocumentView
     ? conceptNodes
-    : inCoreExpanded
-      ? [...coreNodes, ...conceptNodes]
-      : documents.length > 0
-        ? coreNodes
-        : fallbackNodes;
+    : inDomainView
+      ? [...domainCoreNodes, ...conceptNodes]
+      : inCoreExpanded
+        ? [...coreNodes, ...conceptNodes]
+        : documents.length > 0
+          ? coreNodes
+          : fallbackNodes;
   const currentEdges = inDocumentView
     ? conceptEdges
-    : inCoreExpanded
-      ? [...coreEdges, ...conceptEdges]
-      : documents.length > 0
-        ? coreEdges
-        : fallbackEdges;
-
+    : inDomainView
+      ? [...domainCoreEdges, ...conceptEdges]
+      : inCoreExpanded
+        ? [...coreEdges, ...conceptEdges]
+        : documents.length > 0
+          ? coreEdges
+          : fallbackEdges;
   const sceneMode: CortexSceneMode = inDocumentView
     ? "document"
-    : inCoreExpanded
+    : inCoreExpanded || inDomainView
       ? "core"
       : documents.length > 0
         ? "core"
@@ -644,7 +678,8 @@ export function CortexPage() {
   const activeFilterCount =
     activeTypes.length +
     (linkFilter !== "all" ? 1 : 0) +
-    (layout !== "constellation" ? 1 : 0);
+    (layout !== "constellation" ? 1 : 0) +
+    (showBridges ? 1 : 0);
 
   const showFilterButton = !isEmpty || concepts.length > 0;
 
@@ -688,6 +723,18 @@ export function CortexPage() {
     focus(null);
     expandCore();
   };
+  const handleDomainClick = (node: GraphNode) => {
+    const cortexNode = node as CortexGraphNode;
+    const domain =
+      cortexNode.domain ??
+      (node.id.startsWith("domain:") ? node.id.slice(7) : null);
+    if (!domain) return;
+    clearHighlight();
+    select(null);
+    focus(null);
+    collapseCore();
+    setSelectedDomain(domain);
+  };
 
   const handleDocumentClick = (node: GraphNode) => {
     const cortexNode = node as CortexGraphNode;
@@ -714,14 +761,19 @@ export function CortexPage() {
     }
     if (inCoreExpanded) {
       collapseCore();
+      return;
+    }
+    if (inDomainView) {
+      setSelectedDomain(null);
     }
   };
-
-  const statusLabel = inCoreExpanded
-    ? `${concepts.length} memories in view · ${relationships.length} links`
-    : activeDocument
-      ? `${activeDocument.conceptCount ?? 0} memories · ${activeDocument.connectedConceptCount ?? 0} linked · ${activeDocument.isolatedConceptCount ?? 0} islands`
-      : `${core?.documentCount ?? 0} files · ${core?.totalMemories ?? 0} memories · avg ${Math.round((core?.averageStrength ?? 0) * 100)}%`;
+  const statusLabel = inDomainView
+    ? `${formatDomainLabel(selectedDomain ?? "")} island · ${scopedConcepts.length} memories · ${conceptEdges.length} links`
+    : inCoreExpanded
+      ? `${concepts.length} memories in view · ${relationships.length} links`
+      : activeDocument
+        ? `${activeDocument.conceptCount ?? 0} memories · ${activeDocument.connectedConceptCount ?? 0} linked · ${activeDocument.isolatedConceptCount ?? 0} islands`
+        : `${core?.documentCount ?? 0} files · ${core?.totalMemories ?? 0} memories · avg ${Math.round((core?.averageStrength ?? 0) * 100)}%`;
 
   return (
     <div className="cortex-root relative h-full overflow-hidden">
@@ -740,6 +792,7 @@ export function CortexPage() {
         drawerOpen={inspectorOpen}
         sheetOpen={sheetOpen}
         onCoreClick={handleCoreClick}
+        onDomainClick={handleDomainClick}
         onDocumentClick={handleDocumentClick}
         onDocumentOpen={handleDocumentClick}
         onConceptClick={handleConceptClick}
@@ -863,6 +916,8 @@ export function CortexPage() {
         counts={conceptTypeCounts}
         linkFilter={linkFilter}
         onLinkFilterChange={setLinkFilter}
+        showBridges={showBridges}
+        onToggleBridges={() => setShowBridges((value) => !value)}
         showLayoutSwitcher={true}
         visibleCount={visibleConcepts.length}
         totalCount={scopedConcepts.length}

@@ -38,7 +38,7 @@ export interface ModelRouterDeps {
   providers: Record<string, AIProvider>;
 }
 
-interface TaskAttempt extends AIModelRef {}
+interface TaskAttempt extends AIModelRef { }
 
 interface ErrorClassification {
   retryable: boolean;
@@ -628,15 +628,14 @@ Relationship type:`;
     userMessage: string
   ): Promise<AIChatResult> {
     const attempts = this.getTaskAttempts(task);
-    let available = this.availableAttempts(attempts);
+    let available = this.availableAttempts(attempts, task);
 
     if (available.length === 0) {
       const wait = this.soonestCooldownMs();
-
       if (wait > 0 && wait <= 20000) {
         await sleep(wait + 100);
         this.clearExpiredCooldowns();
-        available = this.availableAttempts(attempts);
+        available = this.availableAttempts(attempts, task);
       }
     }
 
@@ -703,16 +702,15 @@ Relationship type:`;
     systemPrompt: string,
     userMessage: string
   ): Promise<T> {
-    const attempts = this.getTaskAttempts("extraction");
-    let available = this.availableAttempts(attempts);
+    const attempts = this.getTaskAttempts("structured");
+    let available = this.availableAttempts(attempts, "structured");
 
     if (available.length === 0) {
       const wait = this.soonestCooldownMs();
-
       if (wait > 0 && wait <= 20000) {
         await sleep(wait + 100);
         this.clearExpiredCooldowns();
-        available = this.availableAttempts(attempts);
+        available = this.availableAttempts(attempts, "structured");
       }
     }
 
@@ -772,15 +770,14 @@ Relationship type:`;
 
   private async routeEmbedding(text: string): Promise<AIEmbeddingResult> {
     const attempts = this.getTaskAttempts("embedding");
-    let available = this.availableAttempts(attempts);
+    let available = this.availableAttempts(attempts, "embedding");
 
     if (available.length === 0) {
       const wait = this.soonestCooldownMs();
-
       if (wait > 0 && wait <= 20000) {
         await sleep(wait + 100);
         this.clearExpiredCooldowns();
-        available = this.availableAttempts(attempts);
+        available = this.availableAttempts(attempts, "embedding");
       }
     }
 
@@ -867,14 +864,15 @@ Relationship type:`;
     return attempts;
   }
 
-  private availableAttempts(attempts: TaskAttempt[]): TaskAttempt[] {
+  private availableAttempts(
+    attempts: TaskAttempt[],
+    task: AITask
+  ): TaskAttempt[] {
     return attempts.filter((model) => {
       const provider = this.providers[model.provider];
-
-      if (!provider || !provider.supportsTask("embedding" as AITask)) {
+      if (!provider || !provider.supportsTask(task)) {
         return false;
       }
-
       return !this.isCoolingDown(model.provider);
     });
   }

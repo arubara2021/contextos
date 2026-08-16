@@ -14,7 +14,8 @@ import {
 import { ForgettingBudget, BudgetCandidate } from "../memory/forgetting-budget";
 
 const MAX_SOURCE_RATIO = 0.6;
-const INJECTION_SEMANTIC_FLOOR = 0.08;
+const INJECTION_SEMANTIC_FLOOR = 0.12;
+const INJECTION_TEXT_RESCUE_SCORE = 0.5;
 const BROAD_RECALL_INTENTS = new Set(["recall", "summarize", "explore"]);
 
 const SYSTEM_HEADER = `You are an AI assistant with access to the user's persistent memory. The following memories were retrieved from their knowledge base based on the current conversation. Use these memories to provide personalized, contextually relevant responses.
@@ -48,6 +49,11 @@ export class Assembler {
       0
     );
 
+    const topText = scoredCandidates.reduce(
+      (max, s) => Math.max(max, s.scores.textScore ?? 0),
+      0
+    );
+
     const isChitchat =
       queryAnalysis.intent === "chitchat" || queryAnalysis.isChitchat === true;
 
@@ -56,14 +62,16 @@ export class Assembler {
       queryAnalysis.specificity < 0.4;
 
     const isAbstractQuery = Boolean(queryAnalysis.isAbstractQuery);
+
     const documentScoped = Boolean(queryAnalysis.documentScoped);
+
+    const hasDirectEvidence =
+      topSemantic >= INJECTION_SEMANTIC_FLOOR ||
+      topText >= INJECTION_TEXT_RESCUE_SCORE;
 
     if (
       isChitchat ||
-      (!broadRecall &&
-        !isAbstractQuery &&
-        !documentScoped &&
-        topSemantic < INJECTION_SEMANTIC_FLOOR)
+      (!broadRecall && !isAbstractQuery && !hasDirectEvidence)
     ) {
       logger.debug("Context injection suppressed", {
         isChitchat,
@@ -72,7 +80,9 @@ export class Assembler {
         documentScoped,
         intent: queryAnalysis.intent,
         topSemantic: Math.round(topSemantic * 10000) / 10000,
-        floor: INJECTION_SEMANTIC_FLOOR,
+        topText: Math.round(topText * 10000) / 10000,
+        semanticFloor: INJECTION_SEMANTIC_FLOOR,
+        textRescueScore: INJECTION_TEXT_RESCUE_SCORE,
       });
 
       return this.emptyResult();

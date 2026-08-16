@@ -264,26 +264,8 @@ export class SessionStore {
       throw error;
     }
   }
-
-  async getDocumentId(sessionId: string): Promise<string | null> {
-    try {
-      const row = await queryOne<{ document_id: string }>(
-        `SELECT d.document_id
-         FROM documents d
-         INNER JOIN messages m ON m.session_id = $1
-         WHERE d.filename IS NOT NULL
-         ORDER BY d.uploaded_at DESC
-         LIMIT 1`,
-        [sessionId]
-      );
-      return row?.document_id ?? null;
-    } catch (error) {
-      logger.debug("getDocumentId failed, returning null", {
-        sessionId,
-        error: (error as Error).message,
-      });
-      return null;
-    }
+  async getDocumentId(_sessionId: string): Promise<string | null> {
+    return null;
   }
 }
 

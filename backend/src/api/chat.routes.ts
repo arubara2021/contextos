@@ -22,6 +22,34 @@ const IDENTITY_RE =
 const UUID_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
+const GENERIC_DOCUMENT_TOKENS = new Set([
+  "paper",
+  "papers",
+  "file",
+  "files",
+  "doc",
+  "docs",
+  "document",
+  "documents",
+  "pdf",
+  "book",
+  "books",
+  "report",
+  "reports",
+  "note",
+  "notes",
+  "draft",
+  "final",
+  "copy",
+  "text",
+  "txt",
+  "md",
+  "markdown",
+  "v1",
+  "v2",
+  "v3",
+]);
+
 function isValidUuid(value: unknown): value is string {
   return typeof value === "string" && UUID_REGEX.test(value.trim());
 }
@@ -60,6 +88,218 @@ function nonNegativeInt(value: unknown): number {
   return Math.max(0, Math.round(num));
 }
 
+function tokenizeForDocumentMatch(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter((token) => token.length > 2)
+  );
+}
+
+function isFollowUpMessage(text: string): boolean {
+  return /\b(it|this|that|these|the document|the paper|the file|the book|again|more|overview|summary|summarize|read)\b/i.test(
+    text
+  );
+}
+
+async function resolveTargetDocument(
+  userId: string,
+  message: string,
+  queryAnalysis: any,
+  rawStore: any,
+  recentHistory: Array<{ role: string; content: string }> = []
+): Promise<{ documentId?: string; filename?: string }> {
+  if (!isValidUuid(userId)) return {};
+
+  const cleanMessage = message.trim();
+  if (!cleanMessage) return {};
+
+  let docs: Array<{ documentId: string; filename: string }> = [];
+
+  try {
+    docs = await rawStore.getAllDocuments(userId);
+  } catch {
+    return {};
+  }
+
+  if (!Array.isArray(docs) || docs.length === 0) {
+    return {};
+  }
+
+  const queryLower = cleanMessage.toLowerCase();
+  const compactQuery = queryLower.replace(/\s+/g, "");
+
+  const queryTokens = tokenizeForDocumentMatch(
+    [
+      cleanMessage,
+      ...(Array.isArray(queryAnalysis?.keyTerms) ? queryAnalysis.keyTerms : []),
+    ].join(" ")
+  );
+
+  const followUp = isFollowUpMessage(cleanMessage);
+
+  const historyTokens = followUp
+    ? tokenizeForDocumentMatch(
+      recentHistory
+        .slice(-4)
+        .filter((m) => m.role === "assistant")
+        .map((m) => m.content)
+        .join(" ")
+    )
+    : new Set<string>();
+
+  const candidates: Array<{
+    documentId: string;
+    filename: string;
+    score: number;
+  }> = [];
+
+  for (const doc of docs) {
+    const filename = String(doc.filename ?? "");
+    const filenameLower = filename.toLowerCase();
+
+    const base = filename
+      .replace(/\.[^.]+$/, "")
+      .replace(/[_\-\.]+/g, " ")
+      .toLowerCase()
+      .trim();
+
+    if (!filenameLower || !base) continue;
+
+    let score = 0;
+
+    if (queryLower.includes(filenameLower)) {
+      score += 8;
+    }
+
+    if (queryLower.includes(base)) {
+      score += 6;
+    }
+
+    const compactBase = base.replace(/\s+/g, "");
+
+    if (compactBase.length > 5 && compactQuery.includes(compactBase)) {
+      score += 5;
+    }
+
+    const baseTokens = tokenizeForDocumentMatch(base);
+
+    for (const token of baseTokens) {
+      const inQuery = queryTokens.has(token);
+      const inHistory = followUp && historyTokens.has(token);
+
+      if (!inQuery && !inHistory) continue;
+
+      let tokenScore = GENERIC_DOCUMENT_TOKENS.has(token)
+        ? 0.5
+        : token.length >= 5
+          ? 3
+          : 2;
+
+      if (!inQuery && inHistory) {
+        tokenScore = GENERIC_DOCUMENT_TOKENS.has(token) ? 0.25 : 2.5;
+      }
+
+      score += tokenScore;
+    }
+
+    if (score >= 2.5) {
+      candidates.push({
+        documentId: doc.documentId,
+        filename,
+        score,
+      });
+    }
+  }
+
+  if (candidates.length === 0) {
+    return {};
+  }
+
+  candidates.sort(
+    (a, b) => b.score - a.score || a.filename.length - b.filename.length
+  );
+
+  const top = candidates[0];
+  const second = candidates[1];
+
+  if (second && second.score >= top.score - 1) {
+    return {};
+  }
+
+  return {
+    documentId: top.documentId,
+    filename: top.filename,
+  };
+}
+
+function buildHistoryUserPrompt(
+  history: Array<{ role: string; content: string }>,
+  message: string
+): string {
+  if (!Array.isArray(history) || history.length === 0) {
+    return `Answer the following user message directly. Do not repeat it.
+
+${message}`;
+  }
+
+  const recent = history
+    .slice(-8)
+    .filter((m) => typeof m.content === "string" && m.content.trim().length > 0);
+
+  if (recent.length === 0) {
+    return `Answer the following user message directly. Do not repeat it.
+
+${message}`;
+  }
+
+  const historyText = recent
+    .map((m) => {
+      const role = m.role === "assistant" ? "ASSISTANT" : "USER";
+      const content =
+        m.content.length > 1200
+          ? `${m.content.substring(0, 1200)}...`
+          : m.content;
+      return `${role}: ${content}`;
+    })
+    .join("\n");
+
+  return `Recent conversation:
+${historyText}
+
+Current user message:
+${message}
+
+Respond only to the current user message. Do not repeat the current user message.`;
+}
+
+function isBadAssistantResponse(
+  raw: unknown,
+  userMessage: string,
+  recentHistory: Array<{ role: string; content: string }>
+): boolean {
+  const text = String(raw ?? "")
+    .trim()
+    .toLowerCase();
+  const current = userMessage.trim().toLowerCase();
+
+  if (!text) return true;
+  if (text.length < 3) return true;
+  if (current && text === current) return true;
+
+  for (const item of recentHistory.slice(-6)) {
+    if (item.role !== "user") continue;
+    const previous = String(item.content ?? "")
+      .trim()
+      .toLowerCase();
+    if (previous && text === previous) return true;
+  }
+
+  return false;
+}
+
 async function getKnowledgeBaseState(
   userId: string
 ): Promise<KnowledgeBaseState> {
@@ -74,8 +314,10 @@ async function getKnowledgeBaseState(
         [userId]
       ),
     ]);
+
     const memoryCount = nonNegativeInt(memoryRows[0]?.count);
     const documentCount = nonNegativeInt(documentRows[0]?.count);
+
     return {
       memoryCount,
       documentCount,
@@ -86,15 +328,18 @@ async function getKnowledgeBaseState(
       userId,
       error: (error as Error).message,
     });
+
     return { memoryCount: 0, documentCount: 0, hasKnowledge: false };
   }
 }
+
 interface ArchiveInventoryItem {
   documentId: string;
   filename: string;
   memoryCount: number;
   topConcepts: string[];
 }
+
 async function getArchiveInventory(
   userId: string
 ): Promise<ArchiveInventoryItem[]> {
@@ -103,37 +348,48 @@ async function getArchiveInventory(
     filename: string;
     memory_count: number;
   }>(
-    `SELECT d.document_id, d.filename, COALESCE(d.domain, 'general') AS domain, COUNT(b.bucket_id)::int AS memory_count
+    `SELECT d.document_id,
+            d.filename,
+            COALESCE(d.domain, 'general') AS domain,
+            COUNT(b.bucket_id)::int AS memory_count
      FROM documents d
      LEFT JOIN buckets b ON b.document_id = d.document_id
      WHERE d.user_id = $1::uuid
-     GROUP BY d.document_id, d.filename
+     GROUP BY d.document_id, d.filename, d.domain
      ORDER BY MAX(d.uploaded_at) DESC
      LIMIT 10`,
     [userId]
   );
+
   if (docs.length === 0) return [];
+
   const ids = docs.map((d) => d.document_id);
+
   const tops = await queryMany<{ document_id: string; canonical: string }>(
     `SELECT document_id, canonical
      FROM (
-       SELECT document_id, canonical,
+       SELECT document_id,
+              canonical,
               ROW_NUMBER() OVER (
                 PARTITION BY document_id
                 ORDER BY importance DESC, strength DESC, last_accessed DESC
               ) AS rn
        FROM buckets
-       WHERE user_id = $1::uuid AND document_id = ANY($2::uuid[])
+       WHERE user_id = $1::uuid
+         AND document_id = ANY($2::uuid[])
      ) t
      WHERE rn <= 3`,
     [userId, ids]
   );
+
   const byDoc = new Map<string, string[]>();
+
   for (const t of tops) {
     const list = byDoc.get(t.document_id) ?? [];
     list.push(t.canonical);
     byDoc.set(t.document_id, list);
   }
+
   return docs.map((d) => ({
     documentId: d.document_id,
     filename: d.filename,
@@ -158,6 +414,7 @@ function toModelFailurePayload(
       },
     };
   }
+
   return {
     status: 502,
     body: {
@@ -219,6 +476,7 @@ function toApiMemory(memory: any, traceItem: any, fallbackRank: number): any {
 
 function normalizeRelatedDocuments(rows: unknown[]): any[] {
   if (!Array.isArray(rows)) return [];
+
   return rows
     .filter(
       (item): item is Record<string, any> =>
@@ -253,14 +511,17 @@ async function enrichMemoryTrace(trace: unknown[], userId: string): Promise<any[
   );
 
   const filenames = new Map<string, string>();
+
   if (documentIds.length > 0) {
     try {
       const rows = await queryMany<{ document_id: string; filename: string }>(
         `SELECT document_id, filename
          FROM documents
-         WHERE document_id = ANY($1::uuid[]) AND user_id = $2::uuid`,
+         WHERE document_id = ANY($1::uuid[])
+           AND user_id = $2::uuid`,
         [documentIds, userId]
       );
+
       for (const row of rows) {
         filenames.set(row.document_id, row.filename);
       }
@@ -316,10 +577,12 @@ function buildSourceDocuments(trace: any[]): any[] {
   for (const item of trace) {
     const documentId = item?.documentId;
     const filename = item?.documentFilename;
+
     if (typeof documentId !== "string" || !isValidUuid(documentId)) continue;
     if (typeof filename !== "string" || filename.length === 0) continue;
 
     const existing = grouped.get(documentId);
+
     if (existing) {
       existing.memoryCount += 1;
     } else {
@@ -400,6 +663,7 @@ async function getRelatedDocumentHints(
 
   if (!targetDocumentId && Array.isArray(trace)) {
     const counts = new Map<string, number>();
+
     for (const item of trace) {
       const documentId = item?.documentId;
       if (typeof documentId !== "string" || !isValidUuid(documentId)) continue;
@@ -408,12 +672,14 @@ async function getRelatedDocumentHints(
 
     let bestDocumentId: string | null = null;
     let bestCount = 0;
+
     for (const [documentId, count] of counts.entries()) {
       if (count > bestCount) {
         bestCount = count;
         bestDocumentId = documentId;
       }
     }
+
     targetDocumentId = bestDocumentId ?? undefined;
   }
 
@@ -428,6 +694,7 @@ async function getRelatedDocumentHints(
         targetDocumentId,
         5
       );
+
       return normalizeRelatedDocuments(rows);
     }
   } catch (error) {
@@ -468,6 +735,7 @@ async function getRelatedDocumentHints(
        LIMIT $3`,
       [userId, targetDocumentId, 5]
     );
+
     return normalizeRelatedDocuments(rows);
   } catch (error) {
     logger.debug("getRelatedDocumentHints fallback failed", {
@@ -475,6 +743,7 @@ async function getRelatedDocumentHints(
       targetDocumentId,
       error: (error as Error).message,
     });
+
     return [];
   }
 }
@@ -492,6 +761,7 @@ router.post(
       }
 
       const validated = validateChatRequest(req.body);
+
       if (!validated) {
         res.status(400).json({
           error: "Invalid request",
@@ -519,6 +789,7 @@ router.post(
       } = getDependencies();
 
       const sessionExists = await sessionStore.exists(validated.sessionId);
+
       if (!sessionExists) {
         res.status(404).json({ error: "Session not found" });
         return;
@@ -526,7 +797,23 @@ router.post(
 
       await sessionStore.updateSessionActivity(validated.sessionId);
 
+      let recentHistory: Array<{ role: string; content: string }> = [];
+
+      try {
+        const history = await rawStore.getMessageHistory(validated.sessionId);
+        recentHistory = history.slice(-8).map((m: any) => ({
+          role: String(m.role ?? "user"),
+          content: String(m.content ?? ""),
+        }));
+      } catch (error) {
+        logger.debug("Failed to load recent chat history", {
+          sessionId: validated.sessionId,
+          error: (error as Error).message,
+        });
+      }
+
       const timestamp = new Date().toISOString();
+
       const userMessageId = await rawStore.storeMessage(
         validated.sessionId,
         "user",
@@ -544,7 +831,9 @@ router.post(
         );
 
         const modelStart = Date.now();
+
         let modelResult: any;
+
         try {
           modelResult = await modelRouter.send(
             promptPair.systemPrompt,
@@ -556,15 +845,18 @@ router.post(
             error as Error,
             config.server.isProduction
           );
+
           logger.error("AI chat provider failed", {
             sessionId: validated.sessionId,
             error: (error as Error).message,
           });
+
           res.status(failure.status).json(failure.body);
           return;
         }
 
         const aiTimestamp = new Date().toISOString();
+
         const aiMessage = await rawStore.storeMessage(
           validated.sessionId,
           "assistant",
@@ -582,6 +874,7 @@ router.post(
             userMessageId,
             req.userId
           );
+
           (ingestionPipeline as any).ingestMessageAsync(
             "assistant",
             modelResult.response,
@@ -644,14 +937,12 @@ router.post(
             totalDurationMs: Date.now() - start,
           },
         });
+
         return;
       }
 
-      const sessionDocId = await sessionStore.getDocumentId(validated.sessionId);
-      const scopeDocId =
-        sessionDocId && isValidUuid(sessionDocId) ? sessionDocId : undefined;
-
       let queryAnalysis: any;
+
       try {
         queryAnalysis = await queryAnalyzer.analyzeWithAI(validated.message);
       } catch (error) {
@@ -659,10 +950,38 @@ router.post(
           sessionId: validated.sessionId,
           error: (error as Error).message,
         });
+
         queryAnalysis = await queryAnalyzer.analyze(validated.message);
       }
+
+      let focusDocument: { documentId?: string; filename?: string } = {};
+
+      if (!queryAnalysis?.isChitchat && !queryAnalysis?.isArchiveMeta) {
+        try {
+          focusDocument = await resolveTargetDocument(
+            req.userId,
+            validated.message,
+            queryAnalysis,
+            rawStore,
+            recentHistory
+          );
+        } catch (error) {
+          logger.debug("Target document resolution failed", {
+            sessionId: validated.sessionId,
+            error: (error as Error).message,
+          });
+        }
+      }
+
+      const scopeDocId =
+        focusDocument.documentId && isValidUuid(focusDocument.documentId)
+          ? focusDocument.documentId
+          : undefined;
+
       const queryAnalysisMs = Date.now() - start;
+
       let archiveInventory: ArchiveInventoryItem[] | undefined;
+
       if (Boolean((queryAnalysis as any)?.isArchiveMeta)) {
         try {
           archiveInventory = await getArchiveInventory(req.userId);
@@ -670,11 +989,15 @@ router.post(
           logger.debug("Archive inventory lookup failed", {
             error: (error as Error).message,
           });
+
           archiveInventory = undefined;
         }
       }
+
       const retrievalStart = Date.now();
+
       let scoredCandidates: any[] = [];
+
       try {
         scoredCandidates = await (retriever as any).retrieve(
           queryAnalysis,
@@ -687,10 +1010,13 @@ router.post(
           error: (error as Error).message,
         });
       }
+
       const retrievalMs = Date.now() - retrievalStart;
 
       const assemblyStart = Date.now();
+
       let assembly: any = null;
+
       try {
         assembly = assembler.assemble(scoredCandidates, queryAnalysis);
       } catch (error) {
@@ -707,12 +1033,15 @@ router.post(
         budgetUsed: 0,
         budgetMax: 0,
       };
+
       const selectedMemories: any[] = Array.isArray(assembly?.selectedMemories)
         ? assembly.selectedMemories
         : [];
+
       const assemblyMs = Date.now() - assemblyStart;
 
       let rawTrace: any[] = [];
+
       try {
         rawTrace =
           (promptBuilder as any).buildMemoryTrace(contextBlock, selectedMemories) ??
@@ -725,6 +1054,7 @@ router.post(
       }
 
       let memoryTrace: any[] = rawTrace;
+
       try {
         memoryTrace = await enrichMemoryTrace(rawTrace, req.userId);
       } catch (error) {
@@ -735,12 +1065,14 @@ router.post(
       }
 
       const sourceDocuments = buildSourceDocuments(memoryTrace);
+
       const relatedDocuments = await getRelatedDocumentHints(
         req.userId,
         relationshipStore,
         scopeDocId,
         memoryTrace
       );
+
       const connectionConfidence = buildConnectionConfidence(
         scoredCandidates,
         memoryTrace
@@ -750,11 +1082,30 @@ router.post(
         contextBlock,
         validated.message,
         knowledgeBase,
-        queryAnalysis,
+        {
+          ...queryAnalysis,
+          documentScoped: Boolean(scopeDocId),
+        },
         archiveInventory
       );
-      const systemPrompt = promptPair?.systemPrompt ?? "";
-      const userPrompt = promptPair?.userPrompt ?? validated.message;
+
+      let systemPrompt = promptPair?.systemPrompt ?? "";
+      const userPrompt = buildHistoryUserPrompt(recentHistory, validated.message);
+
+      if (focusDocument.filename) {
+        systemPrompt += `
+
+DOCUMENT FOCUS MODE:
+The user is asking about ${focusDocument.filename}.
+Answer only from memories that belong to ${focusDocument.filename} or are directly connected to it.
+Do not bring unrelated documents into the answer unless the user explicitly asks to compare.
+If the retrieved memories do not contain the answer, say plainly that ${focusDocument.filename} does not have enough stored evidence for that question.`;
+      }
+
+      systemPrompt += `
+
+SOURCE DISCIPLINE:
+A source named "conversation" is chat history, not an uploaded document. Never count it as a document.`;
 
       const modelStart = Date.now();
       let modelResult: any;
@@ -762,7 +1113,7 @@ router.post(
         modelResult = await modelRouter.send(
           systemPrompt,
           userPrompt,
-          validated.modelId
+          validated.message
         );
       } catch (error) {
         const failure = toModelFailurePayload(
@@ -776,9 +1127,37 @@ router.post(
         res.status(failure.status).json(failure.body);
         return;
       }
+
+      if (isBadAssistantResponse(modelResult?.response, validated.message, recentHistory)) {
+        try {
+          modelResult = await modelRouter.send(
+            `${systemPrompt}
+
+Answer the user's latest message directly. Do not repeat the user's message.`,
+            validated.message,
+            validated.modelId
+          );
+        } catch (error) {
+          logger.warn("AI retry after bad response failed", {
+            sessionId: validated.sessionId,
+            error: (error as Error).message,
+          });
+        }
+      }
+
+      if (isBadAssistantResponse(modelResult?.response, validated.message, recentHistory)) {
+        modelResult = {
+          response:
+            "I could not get a clean answer from the model. Please try again or switch the model.",
+          modelUsed: modelResult?.modelUsed ?? "unknown",
+          durationMs: Date.now() - modelStart,
+        };
+      }
+
       const modelMs = Date.now() - modelStart;
 
       const aiTimestamp = new Date().toISOString();
+
       const aiMessage = await rawStore.storeMessage(
         validated.sessionId,
         "assistant",
@@ -796,6 +1175,7 @@ router.post(
           userMessageId,
           req.userId
         );
+
         (ingestionPipeline as any).ingestMessageAsync(
           "assistant",
           modelResult.response,
@@ -813,6 +1193,7 @@ router.post(
       }
 
       const traceByBucket = new Map<string, any>();
+
       for (const item of memoryTrace) {
         if (item?.bucketId && isValidUuid(item.bucketId)) {
           traceByBucket.set(item.bucketId, item);
@@ -835,6 +1216,7 @@ router.post(
         );
 
       const injectedIdSet = new Set(injectedIds);
+
       const availableMemories = scoredCandidates
         .filter((candidate: any) => {
           const id = candidate?.bucketId;
@@ -910,11 +1292,13 @@ router.post(
       });
     } catch (error) {
       const err = error as Error;
+
       logger.error("Chat endpoint failed", {
         sessionId: req.body?.sessionId,
         error: err.message,
         stack: err.stack,
       });
+
       res.status(500).json({ error: "Failed to process chat message" });
     }
   }
@@ -931,6 +1315,7 @@ router.get(
       }
 
       const { sessionId } = req.params;
+
       if (!sessionId || !isValidUuid(sessionId)) {
         res.status(404).json({ error: "Session not found" });
         return;
@@ -939,6 +1324,7 @@ router.get(
       const { sessionStore, rawStore } = getDependencies();
 
       const sessionExists = await sessionStore.exists(sessionId);
+
       if (!sessionExists) {
         res.status(404).json({ error: "Session not found" });
         return;
@@ -956,6 +1342,7 @@ router.get(
         sessionId: req.params.sessionId,
         error: (error as Error).message,
       });
+
       res.status(500).json({ error: "Failed to retrieve chat history" });
     }
   }

@@ -10,6 +10,7 @@ export interface QueryAnalysisInput {
   preferredTypes?: string[];
   isArchiveMeta?: boolean;
   isChitchat?: boolean;
+  targetDocumentFilename?: string;
 }
 export interface ArchiveInventoryItem {
   documentId: string;
@@ -223,24 +224,47 @@ RULES:
 4. If asked "how many", give the exact counts above.
 5. End with one short suggestion: ask about any document, compare them, or upload more.`;
 }
+function buildFocusDocumentPrompt(filename?: string): string {
+  const docName =
+    filename && filename.trim().length > 0
+      ? filename.trim()
+      : "the selected document";
+
+  return `DOCUMENT FOCUS MODE:
+The user is asking about ${docName}.
+
+HARD FOCUS RULES:
+1. Answer only from memories that belong to ${docName} or are directly connected to it.
+2. Do not bring unrelated documents into the answer unless the user explicitly asks to compare.
+3. If the retrieved memories do not contain the answer, say plainly that ${docName} does not have enough stored evidence for that question.
+4. Be precise, focused, and technical when the document is technical.
+5. Prefer the document's own concepts, terminology, and structure.`;
+}
 export class PromptBuilder {
   buildSystemContextPrompt(
     contextBlock: ContextBlock,
     userMessage: string,
     knowledgeBase?: KnowledgeBaseState,
     queryAnalysis?: QueryAnalysisInput,
-    inventory?: ArchiveInventoryItem[]
+    inventory?: ArchiveInventoryItem[],
+    conversationHistory?: Array<{ role: string; content: string }>
   ): PromptPair {
+    const historicUserPrompt = this.buildUserPromptWithHistory(
+      userMessage,
+      conversationHistory
+    );
+
     if (queryAnalysis?.isArchiveMeta && inventory && inventory.length > 0) {
       return {
         systemPrompt: buildInventorySystemPrompt(inventory, knowledgeBase),
-        userPrompt: userMessage,
+        userPrompt: historicUserPrompt,
       };
     }
+
     if (!contextBlock.memories || contextBlock.memories.length === 0) {
       return {
         systemPrompt: buildEmptyContextSystemPrompt(knowledgeBase),
-        userPrompt: userMessage,
+        userPrompt: historicUserPrompt,
       };
     }
 
@@ -275,6 +299,9 @@ export class PromptBuilder {
 
     if (isKnowledgeQuery) {
       parts.push(KNOWLEDGE_QUERY_PROMPT);
+    } else if (queryAnalysis?.targetDocumentFilename) {
+      parts.push(buildFocusDocumentPrompt(queryAnalysis.targetDocumentFilename));
+      parts.push(ANSWER_PRIORITY);
     } else if (isDocumentScoped) {
       parts.push(SCOPED_DOCUMENT_PROMPT);
       parts.push(ANSWER_PRIORITY);
@@ -301,10 +328,44 @@ export class PromptBuilder {
 
     return {
       systemPrompt,
-      userPrompt: userMessage,
+      userPrompt: historicUserPrompt,
     };
   }
+  private buildUserPromptWithHistory(
+    userMessage: string,
+    conversationHistory?: Array<{ role: string; content: string }>
+  ): string {
+    if (!conversationHistory || conversationHistory.length === 0) {
+      return userMessage;
+    }
 
+    const recent = conversationHistory
+      .slice(-8)
+      .filter((m) => typeof m.content === "string" && m.content.trim().length > 0);
+
+    if (recent.length === 0) {
+      return userMessage;
+    }
+
+    const historyText = recent
+      .map((m) => {
+        const role = m.role === "assistant" ? "ASSISTANT" : "USER";
+
+        const content =
+          m.content.length > 1200
+            ? `${m.content.substring(0, 1200)}...`
+            : m.content;
+
+        return `${role}: ${content}`;
+      })
+      .join("\n");
+
+    return `Recent conversation:
+${historyText}
+
+Current user message:
+${userMessage}`;
+  }
   buildGreetingPrompt(
     userMessage: string,
     knowledgeBase?: KnowledgeBaseState

@@ -35,6 +35,7 @@ interface CortexCanvasProps {
   drawerOpen?: boolean;
   sheetOpen?: boolean;
   onCoreClick?: () => void;
+  onDomainClick?: (node: GraphNode) => void;
   onDocumentClick?: (node: GraphNode) => void;
   onDocumentOpen?: (node: GraphNode) => void;
   onConceptClick?: (node: GraphNode) => void;
@@ -467,7 +468,13 @@ export function CortexCanvas(props: CortexCanvasProps) {
     const current = propsRef.current;
     const kind = node.kind ?? "concept";
     fireRails(node.id);
-    if (kind === "core" || kind === "domain") {
+    if (kind === "domain") {
+      if (current.onDomainClick) current.onDomainClick(node);
+      else if (current.onCoreClick) current.onCoreClick();
+      else current.onNodeClick?.(node);
+      return;
+    }
+    if (kind === "core") {
       if (current.onCoreClick) current.onCoreClick();
       else current.onNodeClick?.(node);
       return;
@@ -696,7 +703,11 @@ export function CortexCanvas(props: CortexCanvasProps) {
         current.onDocumentOpen(node);
         return;
       }
-      if ((kind === "core" || kind === "domain") && current.onCoreClick) {
+      if (kind === "domain" && current.onDomainClick) {
+        current.onDomainClick(node);
+        return;
+      }
+      if (kind === "core" && current.onCoreClick) {
         current.onCoreClick();
         return;
       }

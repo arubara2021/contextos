@@ -16,6 +16,8 @@ interface GraphFiltersBaseProps {
   onLinkFilterChange?: (value: CortexFilterMode) => void;
   soloDocumentsOnly?: boolean;
   onToggleSoloDocuments?: () => void;
+  showBridges?: boolean;
+  onToggleBridges?: () => void;
   showLayoutSwitcher?: boolean;
   visibleCount?: number;
   totalCount?: number;
@@ -49,6 +51,8 @@ function GraphFiltersContent(props: GraphFiltersBaseProps) {
     onLinkFilterChange,
     soloDocumentsOnly,
     onToggleSoloDocuments,
+    showBridges,
+    onToggleBridges,
     showLayoutSwitcher = true,
     visibleCount,
     totalCount,
@@ -135,6 +139,31 @@ function GraphFiltersContent(props: GraphFiltersBaseProps) {
           <p className="text-[12px] font-light leading-relaxed text-stone/80">{linkHint}</p>
         </section>
       )}
+      {onToggleBridges && (
+        <section className="fx-rise-sm flex flex-col gap-2.5" style={riseDelay(0.15)}>
+          <p className="font-mono text-[9px] uppercase tracking-[0.26em] text-faint">Bridges</p>
+          <button
+            className={[
+              "flex items-center justify-between rounded-2xl border px-3.5 py-3 text-left transition-all duration-200",
+              showBridges ? "border-ember/45 bg-ember-faint" : "border-line hover:border-line-strong",
+            ].join(" ")}
+            onClick={onToggleBridges}
+          >
+            <span className="text-[13px] text-bone">Show cross-domain bridges</span>
+            <span
+              className={[
+                "grid h-5 w-5 place-items-center rounded-full border transition-all duration-200",
+                showBridges ? "border-ember bg-ember text-[#2A1708]" : "border-line-strong bg-transparent",
+              ].join(" ")}
+            >
+              {showBridges && <span className="h-1.5 w-1.5 rounded-full bg-[#2A1708]" />}
+            </span>
+          </button>
+          <p className="text-[12px] font-light leading-relaxed text-stone/80">
+            Lines between different domains. Off by default so islands stay clean.
+          </p>
+        </section>
+      )}
       {showLayoutSwitcher && layout && onLayoutChange && (
         <section className="fx-rise-sm flex flex-col gap-2.5" style={riseDelay(0.18)}>
           <p className="font-mono text-[9px] uppercase tracking-[0.26em] text-faint">Layout</p>
@@ -199,7 +228,8 @@ export function GraphFilters({
 
   const activeCount =
     contentProps.activeTypes.length +
-    (contentProps.linkFilter && contentProps.linkFilter !== "all" ? 1 : 0);
+    (contentProps.linkFilter && contentProps.linkFilter !== "all" ? 1 : 0) +
+    (contentProps.showBridges ? 1 : 0);
   const countLabel = activeCount > 0 ? `${activeCount} active` : "all memories";
   if (!open) return null;
 
