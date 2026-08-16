@@ -708,9 +708,10 @@ async function storeUploadedFile(params: {
 
   return `dbupload:${fileId}`;
 }
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 50 * 1024 * 1024, files: 1 },
+  limits: { fileSize: MAX_UPLOAD_BYTES, files: 1 },
   fileFilter: (_req, file, cb) => {
     const allowedMimes = [
       "text/plain",
@@ -850,7 +851,9 @@ router.post(
       }
 
       if (err.message.includes("File too large")) {
-        res.status(413).json({ error: "File exceeds maximum size of 50MB" });
+        res.status(413).json({
+          error: `File exceeds maximum size of ${Math.round(MAX_UPLOAD_BYTES / (1024 * 1024))}MB`,
+        });
         return;
       }
 

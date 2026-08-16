@@ -622,6 +622,7 @@ export const api = {
       return request<UploadAccepted>("/documents/upload", {
         method: "POST",
         formData,
+        timeout: 300000,
       });
     },
     job(jobId: string) {

@@ -169,7 +169,7 @@ export function DocumentUpload({ upload, onUploaded }: DocumentUploadProps) {
               )}
             </p>
             <p className="t-mono text-[9.5px] uppercase tracking-[0.2em] text-stone">
-              click to browse · pdf docx md txt code · 4 mb max
+              click to browse · pdf docx md txt code · {formatBytes(MAX_UPLOAD_BYTES)} max
             </p>
           </div>
         )}
