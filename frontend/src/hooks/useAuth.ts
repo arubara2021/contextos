@@ -22,6 +22,9 @@ const DEV_USER: User = {
   updatedAt: new Date().toISOString(),
 };
 
+const DEMO_STORAGE_KEY = "contextos.demo";
+const DEMO_TOKEN_KEY = "contextos.demo.token";
+
 if (DEV_BYPASS_AUTH) {
   setToken(DEV_TOKEN);
   setStoredUser(DEV_USER);
@@ -35,6 +38,52 @@ interface AuthState {
   error: string | null;
 }
 
+const EMPTY_STATE: AuthState = {
+  user: null,
+  token: null,
+  initializing: false,
+  authenticating: false,
+  error: null,
+};
+
+function getDemoToken(): string | null {
+  try {
+    return localStorage.getItem(DEMO_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function getDemoExpiry(): number | null {
+  try {
+    const raw = localStorage.getItem(DEMO_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { expiresAt?: string | null };
+    if (!parsed.expiresAt) return null;
+    const time = new Date(parsed.expiresAt).getTime();
+    return Number.isFinite(time) ? time : null;
+  } catch {
+    return null;
+  }
+}
+
+function isSandboxSession(): boolean {
+  const demoToken = getDemoToken();
+  if (!demoToken) return false;
+  const expiry = getDemoExpiry();
+  if (expiry !== null && expiry <= Date.now()) return false;
+  return true;
+}
+
+function clearDemoStorage(): void {
+  try {
+    localStorage.removeItem(DEMO_STORAGE_KEY);
+    localStorage.removeItem(DEMO_TOKEN_KEY);
+  } catch {
+    return;
+  }
+}
+
 function createInitialState(): AuthState {
   if (DEV_BYPASS_AUTH) {
     return {
@@ -45,13 +94,26 @@ function createInitialState(): AuthState {
       error: null,
     };
   }
-
   const storedToken = getToken();
-  if (storedToken && storedToken === "dev-bypass-token") {
+  if (storedToken && storedToken === DEV_TOKEN) {
     clearToken();
   }
-
   const token = getToken();
+  const sandbox = isSandboxSession();
+  if (sandbox) {
+    const user = getStoredUser();
+    const demoToken = getDemoToken();
+    if (demoToken && demoToken !== token) {
+      setToken(demoToken, true);
+    }
+    return {
+      user,
+      token: demoToken ?? token,
+      initializing: Boolean(user),
+      authenticating: false,
+      error: null,
+    };
+  }
   const expired = !token || isTokenExpired();
   return {
     user: expired ? null : getStoredUser(),
@@ -69,32 +131,35 @@ export function useAuth() {
     if (DEV_BYPASS_AUTH) {
       return;
     }
-
     let cancelled = false;
 
     const onUnauthorized = () => {
-      if (!cancelled) {
-        setState({
-          user: null,
-          token: null,
+      if (cancelled) return;
+      if (isSandboxSession()) {
+        const demoToken = getDemoToken();
+        const user = getStoredUser();
+        if (demoToken) {
+          setToken(demoToken, true);
+        }
+        setState((current) => ({
+          ...current,
+          user: user ?? current.user,
+          token: demoToken ?? current.token,
           initializing: false,
           authenticating: false,
           error: null,
-        });
+        }));
+        return;
       }
+      setState({ ...EMPTY_STATE });
     };
-
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
 
-    if (!getToken() || isTokenExpired()) {
+    const sandbox = isSandboxSession();
+    const token = getToken();
+    if (!sandbox && (!token || isTokenExpired())) {
       clearToken();
-      setState({
-        user: null,
-        token: null,
-        initializing: false,
-        authenticating: false,
-        error: null,
-      });
+      setState({ ...EMPTY_STATE });
       return () => {
         window.removeEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
       };
@@ -114,24 +179,12 @@ export function useAuth() {
       })
       .catch((err) => {
         if (cancelled) return;
-
-        // ONLY clear token if it's a hard 401 Unauthorized.
-        // If it's a network timeout, Vercel cold start, or 500 error, keep the token 
-        // so the user isn't forcefully logged out when clicking the back button.
         const is401 = err instanceof ApiError && err.status === 401;
         const isUserDeleted = err instanceof ApiError && err.status === 404;
-
-        if (is401 || isUserDeleted) {
+        if ((is401 || isUserDeleted) && !isSandboxSession()) {
           clearToken();
-          setState({
-            user: null,
-            token: null,
-            initializing: false,
-            authenticating: false,
-            error: null,
-          });
+          setState({ ...EMPTY_STATE });
         } else {
-          // Keep session alive despite backend hiccup
           setState((current) => ({
             ...current,
             initializing: false,
@@ -160,16 +213,15 @@ export function useAuth() {
         }));
         return DEV_USER;
       }
-
       setState((current) => ({
         ...current,
         authenticating: true,
         error: null,
       }));
-
       try {
         const normalizedEmail = email.trim().toLowerCase();
         const { user, token } = await api.auth.login(normalizedEmail, password);
+        clearDemoStorage();
         setToken(token, remember);
         setStoredUser(user, remember);
         setState((current) => ({
@@ -217,13 +269,11 @@ export function useAuth() {
         }));
         return user;
       }
-
       setState((current) => ({
         ...current,
         authenticating: true,
         error: null,
       }));
-
       try {
         const normalizedEmail = email.trim().toLowerCase();
         const { user, token } = await api.auth.register(
@@ -231,6 +281,7 @@ export function useAuth() {
           password,
           displayName.trim()
         );
+        clearDemoStorage();
         setToken(token, true);
         setStoredUser(user, true);
         setState((current) => ({
@@ -261,14 +312,9 @@ export function useAuth() {
 
   const logout = useCallback(() => {
     if (DEV_BYPASS_AUTH) return;
+    clearDemoStorage();
     clearToken();
-    setState({
-      user: null,
-      token: null,
-      initializing: false,
-      authenticating: false,
-      error: null,
-    });
+    setState({ ...EMPTY_STATE });
   }, []);
 
   const updateProfile = useCallback(
