@@ -1,8 +1,234 @@
 ================================================================================
 CONTEXTOS FRONTEND CODE DUMP
 ================================================================================
-Total files: 3
+Total files: 4
 ================================================================================
+
+
+================================================================================
+FILE: src/components/layout/ShellLayout.tsx
+================================================================================
+
+import { Outlet, useLocation } from "react-router-dom";
+import { Rail } from "./Rail";
+import { TopHud } from "./TopHud";
+import { DemoBanner } from "./DemoBanner";
+import { MobileDock } from "./MobileDock";
+import { ROUTES } from "../../constants";
+
+export function ShellLayout() {
+  const location = useLocation();
+
+  const immersive = location.pathname.startsWith(ROUTES.dive);
+  const cortex = location.pathname.startsWith(ROUTES.cortex);
+  const settings = location.pathname.startsWith(ROUTES.settings);
+  const showHud = !immersive && !cortex && (!settings || window.innerWidth >= 1024);
+
+  return (
+    <div className="relative h-[100dvh] overflow-hidden bg-void text-bone">
+      <div
+        className="pointer-events-none fixed inset-0 z-0"
+        style={{
+          background:
+            "radial-gradient(1100px 700px at 50% 118%, rgb(255 138 61 / 0.08), transparent 58%), radial-gradient(820px 560px at 92% -12%, rgb(143 216 210 / 0.05), transparent 55%), radial-gradient(700px 500px at -8% 30%, rgb(255 138 61 / 0.035), transparent 60%), linear-gradient(180deg, #100d0b 0%, var(--void) 45%, var(--void-2) 100%)",
+        }}
+      />
+
+      <Rail immersive={immersive} />
+      <DemoBanner />
+
+      {showHud && <TopHud />}
+
+      <main className="relative z-10 h-full lg:pl-[72px]">
+        <Outlet />
+      </main>
+
+      <MobileDock />
+    </div>
+  );
+}
+
+
+================================================================================
+FILE: src/components/layout/Rail.tsx
+================================================================================
+
+import { useEffect, useRef, useState } from "react";
+import { Link, NavLink } from "react-router-dom";
+import { Icon } from "../shared/Icon";
+import { Logo } from "../shared/Logo";
+import { ROUTES } from "../../constants";
+
+const NAV_ITEMS = [
+  { to: ROUTES.cortex, label: "Cortex", icon: "cortex" as const },
+  { to: ROUTES.dive, label: "Dive", icon: "dive" as const },
+  { to: ROUTES.archive, label: "Archive", icon: "archive" as const },
+  { to: ROUTES.settings, label: "Settings", icon: "settings" as const },
+];
+
+function useMobileNavVisibility(): boolean {
+  const [hidden, setHidden] = useState(false);
+  const hiddenRef = useRef(false);
+  const lastY = useRef(0);
+  const idleTimer = useRef(0);
+
+  useEffect(() => {
+    hiddenRef.current = hidden;
+  }, [hidden]);
+
+  useEffect(() => {
+    if (window.innerWidth >= 1024) return;
+
+    const show = () => {
+      if (hiddenRef.current) setHidden(false);
+    };
+    const hide = () => {
+      if (!hiddenRef.current) setHidden(true);
+    };
+    const startIdleTimer = () => {
+      window.clearTimeout(idleTimer.current);
+      idleTimer.current = window.setTimeout(hide, 4000);
+    };
+
+    const onTouch = () => {
+      show();
+      startIdleTimer();
+    };
+
+    let raf = 0;
+    const onScroll = (event: Event) => {
+      const raw = event.target;
+      const el =
+        raw instanceof Element &&
+          raw.scrollHeight > raw.clientHeight + 40
+          ? raw
+          : null;
+      if (!el) return;
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        const scrollTop = el.scrollTop;
+        const delta = scrollTop - lastY.current;
+        lastY.current = scrollTop;
+        if (delta > 6 && scrollTop > 60) {
+          hide();
+        } else if (delta < -6) {
+          show();
+          startIdleTimer();
+        }
+      });
+    };
+
+    const onFocusIn = (e: FocusEvent) => {
+      const t = e.target as HTMLElement;
+      if (
+        t.tagName === "INPUT" ||
+        t.tagName === "TEXTAREA" ||
+        t.contentEditable === "true"
+      ) {
+        hide();
+        window.clearTimeout(idleTimer.current);
+      }
+    };
+    const onFocusOut = () => {
+      setTimeout(() => {
+        const a = document.activeElement as HTMLElement | null;
+        const stillFocused =
+          !!a &&
+          (a.tagName === "INPUT" ||
+            a.tagName === "TEXTAREA" ||
+            a.contentEditable === "true");
+        if (!stillFocused) {
+          show();
+          startIdleTimer();
+        }
+      }, 150);
+    };
+
+    document.addEventListener("touchstart", onTouch, { passive: true });
+    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
+    document.addEventListener("focusin", onFocusIn, true);
+    document.addEventListener("focusout", onFocusOut, true);
+    startIdleTimer();
+    return () => {
+      window.clearTimeout(idleTimer.current);
+      cancelAnimationFrame(raf);
+      document.removeEventListener("touchstart", onTouch);
+      document.removeEventListener("scroll", onScroll, true);
+      document.removeEventListener("focusin", onFocusIn, true);
+      document.removeEventListener("focusout", onFocusOut, true);
+    };
+  }, []);
+
+  return hidden;
+}
+
+interface RailProps {
+  immersive?: boolean;
+}
+
+export function Rail({ immersive = false }: RailProps) {
+  const hidden = useMobileNavVisibility();
+  return (
+    <>
+      <aside
+        className={[
+          "fixed inset-y-0 left-0 z-[45] hidden w-[72px] flex-col items-center border-r border-line bg-[linear-gradient(180deg,#15100d_0%,#100c0a_100%)] px-3 pb-4 pt-5 lg:flex",
+          immersive ? "opacity-95" : "opacity-100",
+        ].join(" ")}
+      >
+        <Link
+          to="/"
+          className="grid h-11 w-11 place-items-center rounded-xl border border-line-strong bg-coal/70 transition-transform duration-700 hover:rotate-180"
+          aria-label="Back to landing page"
+        >
+          <Logo size={24} />
+        </Link>
+        <div className="mt-4 h-px w-8 bg-line-strong" />
+        <nav className="mt-4 flex flex-1 flex-col items-center justify-center gap-2">
+          {NAV_ITEMS.map((item) => (
+            <NavLink key={item.to} to={item.to} className="group relative flex">
+              {({ isActive }) => (
+                <span
+                  className={[
+                    "relative grid h-11 w-11 place-items-center rounded-xl border transition-all duration-300",
+                    isActive
+                      ? "border-ember/40 bg-ember-faint text-ember-hi"
+                      : "border-transparent text-stone hover:bg-soot hover:text-bone",
+                  ].join(" ")}
+                >
+                  {isActive && (
+                    <span className="absolute -left-[14px] top-1/2 h-6 w-[3px] -translate-y-1/2 rounded-r-full bg-gradient-to-b from-ember-hi to-ember-deep shadow-ember" />
+                  )}
+                  <Icon name={item.icon} size={20} />
+                  <span className="pointer-events-none absolute left-full ml-4 whitespace-nowrap rounded-lg border border-line-strong bg-bark px-2.5 py-1 font-mono text-[9px] uppercase tracking-[0.18em] text-bone opacity-0 shadow-lift transition-all duration-200 group-hover:translate-x-0 group-hover:opacity-100">
+                    {item.label}
+                  </span>
+                </span>
+              )}
+            </NavLink>
+          ))}
+        </nav>
+      </aside>
+      <nav
+        aria-label="Primary"
+        className={`dock-mobile${hidden ? " is-hidden" : ""}`}
+      >
+        {NAV_ITEMS.map((item) => (
+          <NavLink key={item.to} to={item.to} className="dock-link">
+            {({ isActive }) => (
+              <span className={`dock-item${isActive ? " is-active" : ""}`}>
+                <span className="dock-icon">
+                  <Icon name={item.icon} size={20} />
+                </span>
+                <span className="dock-label">{item.label}</span>
+              </span>
+            )}
+          </NavLink>
+        ))}
+      </nav>
+    </>
+  );
+}
 
 
 ================================================================================
@@ -27,53 +253,126 @@ const DOCK_ITEMS: DockItem[] = [
     { to: ROUTES.settings, label: "Settings", icon: "settings" },
 ];
 
+const SCROLL_DELTA_PX = 6;
+const SCROLL_TOP_GUARD_PX = 140;
+const IDLE_SHOW_MS = 2500;
+const KEYBOARD_DELTA_PX = 160;
+
 export function MobileDock() {
     const [hidden, setHidden] = useState(false);
     const hiddenRef = useRef(false);
-    const lastYRef = useRef(0);
+    const lastByTargetRef = useRef(new Map<EventTarget, number>());
+    const idleTimerRef = useRef<number | null>(null);
     const location = useLocation();
+
+    const show = () => {
+        if (idleTimerRef.current !== null) {
+            window.clearTimeout(idleTimerRef.current);
+            idleTimerRef.current = null;
+        }
+        if (!hiddenRef.current) return;
+        hiddenRef.current = false;
+        setHidden(false);
+    };
+
+    const hide = () => {
+        if (hiddenRef.current) return;
+        hiddenRef.current = true;
+        setHidden(true);
+    };
+
+    const scheduleShow = () => {
+        if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = window.setTimeout(show, IDLE_SHOW_MS);
+    };
 
     useEffect(() => {
         hiddenRef.current = false;
         setHidden(false);
-        lastYRef.current = 0;
+        lastByTargetRef.current.clear();
     }, [location.pathname]);
 
     useEffect(() => {
         const onScroll = (event: Event) => {
-            const target = event.target;
+            const target: EventTarget =
+                event.target instanceof Element ? event.target : window;
             const y =
-                target instanceof Element ? (target as Element).scrollTop : window.scrollY;
-            const delta = y - lastYRef.current;
-            lastYRef.current = y;
-            if (Math.abs(delta) < 6) return;
-            if (delta > 0 && y > 140 && !hiddenRef.current) {
-                hiddenRef.current = true;
-                setHidden(true);
-            } else if (delta < 0 && hiddenRef.current) {
-                hiddenRef.current = false;
-                setHidden(false);
-            }
+                event.target instanceof Element
+                    ? event.target.scrollTop
+                    : window.scrollY;
+            const prev = lastByTargetRef.current.get(target);
+            lastByTargetRef.current.set(target, y);
+            if (prev === undefined) return;
+            const delta = y - prev;
+            if (Math.abs(delta) < SCROLL_DELTA_PX) return;
+            if (delta > 0 && y > SCROLL_TOP_GUARD_PX) hide();
+            else if (delta < 0) show();
         };
         document.addEventListener("scroll", onScroll, true);
         return () => document.removeEventListener("scroll", onScroll, true);
     }, []);
 
+    useEffect(() => {
+        const viewport = window.visualViewport;
+        if (!viewport) return;
+        const onViewport = () => {
+            if (window.innerHeight - viewport.height > KEYBOARD_DELTA_PX) hide();
+            else show();
+        };
+        viewport.addEventListener("resize", onViewport);
+        viewport.addEventListener("scroll", onViewport);
+        return () => {
+            viewport.removeEventListener("resize", onViewport);
+            viewport.removeEventListener("scroll", onViewport);
+        };
+    }, []);
+
+    useEffect(() => {
+        const onCanvasInteract = (event: Event) => {
+            const target = event.target as HTMLElement | null;
+            if (!target) return;
+            if (target.closest(".dock-mobile") || target.closest(".dock-peek")) return;
+            if (!target.closest(".cortex-root")) return;
+            hide();
+            scheduleShow();
+        };
+        document.addEventListener("pointerdown", onCanvasInteract, true);
+        document.addEventListener("wheel", onCanvasInteract, true);
+        return () => {
+            document.removeEventListener("pointerdown", onCanvasInteract, true);
+            document.removeEventListener("wheel", onCanvasInteract, true);
+            if (idleTimerRef.current !== null) window.clearTimeout(idleTimerRef.current);
+        };
+    }, []);
+
     return (
-        <nav className={`dock-mobile${hidden ? " is-hidden" : ""}`} aria-label="Primary">
-            {DOCK_ITEMS.map((item) => (
-                <NavLink key={item.to} to={item.to} className="dock-link">
-                    {({ isActive }) => (
-                        <span className={`dock-item${isActive ? " is-active" : ""}`}>
-                            <span className="dock-icon">
-                                <Icon name={item.icon} size={17} />
+        <>
+            <nav
+                className={`dock-mobile${hidden ? " is-hidden" : ""}`}
+                aria-label="Primary"
+            >
+                {DOCK_ITEMS.map((item) => (
+                    <NavLink key={item.to} to={item.to} className="dock-link">
+                        {({ isActive }) => (
+                            <span className={`dock-item${isActive ? " is-active" : ""}`}>
+                                <span className="dock-icon">
+                                    <Icon name={item.icon} size={17} />
+                                </span>
+                                <span className="dock-label">{item.label}</span>
                             </span>
-                            <span className="dock-label">{item.label}</span>
-                        </span>
-                    )}
-                </NavLink>
-            ))}
-        </nav>
+                        )}
+                    </NavLink>
+                ))}
+            </nav>
+            {hidden && (
+                <button
+                    type="button"
+                    className="dock-peek"
+                    onClick={show}
+                    aria-label="Show navigation"
+                />
+            )}
+        </>
     );
 }
 
@@ -343,780 +642,48 @@ FILE: src/styles/components/rail.css
   }
 }
 
-
-================================================================================
-FILE: src/styles/components/layout.css
-================================================================================
-
-.shell {
-  position: relative;
-  z-index: 1;
-  height: 100vh;
-  height: 100dvh;
-  overflow: hidden;
-  overscroll-behavior: none;
-  padding-left: var(--rail-width);
-  background:
-    radial-gradient(1100px 700px at 50% 118%, rgb(255 138 61 / 0.07), transparent 58%),
-    radial-gradient(800px 560px at 92% -12%, rgb(143 216 210 / 0.05), transparent 55%),
-    var(--void);
+.dock-mobile {
+  transition:
+    transform 0.34s var(--ease-out),
+    opacity 0.34s var(--ease-out);
+  transform: translateY(0);
+  opacity: 1;
+  will-change: transform;
 }
 
-.shell-body {
-  position: relative;
-  height: 100%;
-}
-
-.demo-dock {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 0;
-  z-index: var(--z-toast);
+.dock-mobile.is-hidden {
+  transform: translateY(calc(100% + env(safe-area-inset-bottom, 0px)));
+  opacity: 0;
   pointer-events: none;
 }
 
-.page {
-  position: relative;
-  height: 100%;
-  padding:
-    calc(var(--hud-height) + env(safe-area-inset-top, 0px) + 28px) 28px calc(64px + env(safe-area-inset-bottom, 0px));
-  overflow-y: auto;
-  overflow-x: hidden;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
-  scrollbar-color: rgb(255 138 61 / 0.28) transparent;
-}
-
-.page::-webkit-scrollbar {
-  width: 9px;
-}
-
-.page::-webkit-scrollbar-thumb {
-  background: rgb(255 138 61 / 0.22);
-  border-radius: 99px;
-  border: 2px solid var(--void);
-}
-
-.page::-webkit-scrollbar-thumb:hover {
-  background: rgb(255 138 61 / 0.42);
-}
-
-.page-narrow {
-  max-width: 1080px;
-  margin: 0 auto;
-}
-
-.page-head {
-  margin-bottom: 28px;
-  animation: rise 0.6s var(--ease-out) both;
-}
-
-.kicker {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  margin-bottom: 14px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.26em;
-  text-transform: uppercase;
-  color: var(--ember);
-}
-
-.kicker::before {
-  content: "";
-  width: 34px;
-  height: 1px;
-  background: linear-gradient(90deg, var(--ember), transparent);
-}
-
-.page-title {
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: clamp(34px, 4.4vw, 52px);
-  line-height: 1.05;
-  letter-spacing: -0.015em;
-  color: var(--bone);
-}
-
-.page-title em {
-  font-style: italic;
-  font-weight: 400;
-  color: var(--ember-hi);
-}
-
-.page-sub {
-  margin-top: 13px;
-  max-width: 58ch;
-  font-size: 15px;
-  font-weight: 300;
-  line-height: 1.7;
-  color: var(--stone);
-}
-
-.page-sub b {
-  color: var(--bone);
-  font-weight: 500;
-}
-
-.panel {
-  position: relative;
-  background: linear-gradient(165deg, var(--soot) 0%, var(--coal) 100%);
-  border: 1px solid var(--line);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-hairline);
-}
-
-.panel-pad {
-  padding: 20px;
-}
-
-.panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 15px 20px;
-  border-bottom: 1px solid var(--line);
-}
-
-.panel-title {
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--stone);
-}
-
-.grid-2 {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 14px;
-}
-
-.grid-3 {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 14px;
-}
-
-.grid-4 {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
-}
-
-.veil {
+.dock-peek {
   position: fixed;
-  inset: 0;
-  z-index: var(--z-veil);
-  background: rgb(8 6 5 / 0.6);
-  backdrop-filter: blur(3px);
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.3s;
-}
-
-.veil.open {
-  opacity: 1;
-  pointer-events: auto;
-}
-
-.empty-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 15px;
-  padding: 64px 20px;
-  text-align: center;
-}
-
-.empty-glyph {
-  width: 64px;
-  height: 64px;
-  display: grid;
-  place-items: center;
-  border-radius: 20px;
-  color: var(--faint);
-  border: 1px dashed var(--line-strong);
-  animation: breathe 4.2s ease-in-out infinite;
-}
-
-.empty-title {
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: 21px;
-  color: var(--bone);
-}
-
-.empty-sub {
-  max-width: 40ch;
-  font-size: 13.5px;
-  font-weight: 300;
-  line-height: 1.6;
-  color: var(--stone);
-}
-
-.divider {
-  height: 1px;
-  margin: 26px 0;
-  background: linear-gradient(90deg, transparent, var(--line-strong), transparent);
-}
-
-.scroll-area {
-  overflow-y: auto;
-  min-height: 0;
-}
-
-.stat-tile {
-  position: relative;
-  padding: 16px 18px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--line);
-  background: linear-gradient(165deg, var(--soot), var(--coal));
-  overflow: hidden;
-  transition: all 0.25s var(--ease-out);
-}
-
-.stat-tile::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: radial-gradient(120px 80px at 85% -20%, rgb(255 138 61 / 0.12), transparent 70%);
-  opacity: 0;
-  transition: opacity 0.3s;
-}
-
-.stat-tile:hover {
-  transform: translateY(-3px);
-  border-color: var(--line-strong);
-  box-shadow: var(--shadow-lift);
-}
-
-.stat-tile:hover::after {
-  opacity: 1;
-}
-
-.stat-tile-label {
-  position: relative;
-  margin-bottom: 8px;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
-  color: var(--faint);
-}
-
-.stat-tile-value {
-  position: relative;
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: 26px;
-  line-height: 1;
-  color: var(--bone);
-  font-variant-numeric: tabular-nums;
-}
-
-.stat-tile.hot .stat-tile-value {
-  color: var(--ember-hi);
-  text-shadow: 0 0 20px var(--ember-glow);
-}
-
-.stat-tile.cold .stat-tile-value {
-  color: var(--mineral);
-}
-
-.stat-tile.alert .stat-tile-value {
-  color: var(--flare);
-  animation: flicker 2.6s ease-in-out infinite;
-}
-
-.stat-tile-delta {
-  position: relative;
-  margin-top: 7px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  color: var(--stone);
-}
-
-.archive-aura {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 460px;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    radial-gradient(720px 360px at 20% -10%, rgb(255 138 61 / 0.1), transparent 60%),
-    radial-gradient(560px 320px at 90% 2%, rgb(143 216 210 / 0.06), transparent 60%);
-}
-
-.ingest-drop {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 16px;
-  flex: 1;
-  min-height: 10rem;
-  padding: 2rem 1.5rem;
-  border: 2px dashed var(--line-strong);
-  border-radius: 1.25rem;
-  overflow: hidden;
+  inset: auto 0 0 0;
+  z-index: calc(var(--z-rail) - 1);
+  height: calc(16px + env(safe-area-inset-bottom, 0px));
+  background: transparent;
+  border: 0;
+  padding: 0;
   cursor: pointer;
-  transition:
-    border-color 0.3s,
-    background 0.3s,
-    box-shadow 0.3s;
 }
 
-.ingest-drop::after {
+.dock-peek::before {
   content: "";
   position: absolute;
-  inset: 0;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.3s;
-  background: radial-gradient(280px circle at var(--gx, 50%) var(--gy, 50%),
-      rgb(255 138 61 / 0.13),
-      transparent 65%);
-}
-
-.ingest-drop:hover {
-  border-color: rgb(255 138 61 / 0.45);
-}
-
-.ingest-drop:hover::after {
-  opacity: 1;
-}
-
-.ingest-drop.drag {
-  border-color: var(--ember);
-  background: var(--ember-faint);
-  box-shadow: var(--shadow-ember-lg);
-}
-
-.ingest-drop.drag::after {
-  opacity: 1;
-}
-
-.ingest-ants {
-  position: absolute;
-  inset: 6px;
-  width: calc(100% - 12px);
-  height: calc(100% - 12px);
-  pointer-events: none;
-}
-
-.vault-row {
-  position: relative;
-  cursor: pointer;
-  -webkit-tap-highlight-color: transparent;
-}
-
-.vault-row::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 3px;
-  background: var(--spine, transparent);
-  opacity: 0;
-  transition: opacity 0.25s;
-}
-
-.vault-row:hover::before {
-  opacity: 1;
-}
-
-.vault-row:active {
-  background: rgb(255 138 61 / 0.04);
-}
-
-.vault-row.is-open {
-  background: rgb(255 138 61 / 0.06);
-}
-
-.vault-row.is-open::before {
-  opacity: 1;
-}
-
-.vault-open {
-  flex: none;
-  color: var(--faint);
-  transition:
-    color 0.2s var(--ease-out),
-    transform 0.2s var(--ease-out);
-}
-
-.vault-row:hover .vault-open,
-.vault-row:focus-visible .vault-open {
-  color: var(--ember-hi);
-  transform: translateX(2px);
-}
-
-.vault-row.is-open .vault-open {
-  color: var(--ember);
-  transform: rotate(90deg);
-}
-
-.vault-del {
-  opacity: 0;
-  transition: opacity 0.2s var(--ease-out);
-}
-
-.vault-row:hover .vault-del,
-.vault-del:focus-visible {
-  opacity: 1;
-}
-
-.doc-reader {
-  font-family: var(--font-body);
-  color: rgb(236 229 218 / 0.82);
-  font-size: 14px;
-  word-break: break-word;
-}
-
-.doc-line {
-  display: block;
-  line-height: 1.55;
-}
-
-.doc-h2 {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin: 1.5em 0 0.5em;
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: 16px;
-  line-height: 1.3;
-  letter-spacing: 0.01em;
-  color: var(--bone);
-  scroll-margin-top: 14px;
-}
-
-.doc-h2::before {
-  content: "";
-  flex: none;
-  width: 14px;
-  height: 1px;
-  background: linear-gradient(90deg, var(--ember), transparent);
-}
-
-.doc-blank {
-  height: 0.85em;
-}
-
-.doc-page {
-  height: 1px;
-  margin: 1.4em 0;
-  background: linear-gradient(90deg, transparent, var(--line-strong), transparent);
-}
-
-.doc-find-mark {
-  border-radius: 3px;
-  padding: 0 1px;
-  color: var(--ember-hi);
-  background: var(--ember-faint);
-  box-shadow: inset 0 0 0 1px rgb(255 138 61 / 0.25);
-}
-
-.doc-find-mark.is-active {
-  color: #fff;
-  background: rgb(255 138 61 / 0.38);
-  box-shadow: 0 0 0 2px var(--ember-glow);
-}
-
-.doc-toc {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.doc-toc-link {
-  display: block;
-  padding: 6px 10px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  line-height: 1.4;
-  letter-spacing: 0.04em;
-  color: var(--stone);
-  text-align: left;
-  transition: all 0.18s var(--ease-out);
-}
-
-.doc-toc-link:hover {
-  color: var(--bone);
-  background: var(--soot);
-  border-color: var(--line);
-  transform: translateX(2px);
-}
-
-.doc-stat {
-  position: relative;
-  overflow: hidden;
-  padding: 12px 14px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius-md);
-  background: linear-gradient(165deg, var(--soot), var(--coal));
-}
-
-.doc-stat-label {
-  margin-bottom: 6px;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--faint);
-}
-
-.doc-stat-value {
-  font-family: var(--font-display);
-  font-weight: 500;
-  font-size: 18px;
-  line-height: 1;
-  color: var(--bone);
-}
-
-.doc-stat.hot .doc-stat-value {
-  color: var(--ember-hi);
-}
-
-.doc-stat.cold .doc-stat-value {
-  color: var(--mineral);
-}
-
-.doc-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  border: 1px solid var(--line-strong);
+  left: 50%;
+  bottom: calc(5px + env(safe-area-inset-bottom, 0px));
+  transform: translateX(-50%);
+  width: 44px;
+  height: 3px;
   border-radius: 99px;
-  background: var(--coal);
-  font-family: var(--font-mono);
-  font-size: 9px;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.cortex-root {
-  position: relative;
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-}
-
-.cortex-stage {
-  position: absolute;
-  inset: 0;
-  min-height: 0;
-}
-
-.cortex-overlay {
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-}
-
-.cortex-overlay>* {
-  pointer-events: auto;
-}
-
-.cortex-safe-top {
-  padding-top: env(safe-area-inset-top, 0px);
-}
-
-.cortex-safe-bottom {
-  padding-bottom: env(safe-area-inset-bottom, 0px);
-}
-
-.settings-rail {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 6px;
-  border-radius: 16px;
-  border: 1px solid var(--line);
-  background: linear-gradient(165deg, var(--soot), var(--coal));
-}
-
-.settings-rail-item {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  width: 100%;
-  min-height: 40px;
-  padding: 9px 12px;
-  border-radius: 11px;
-  text-align: left;
-  color: var(--stone);
-  font-family: var(--font-mono);
-  font-size: 9.5px;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  transition: color 0.2s var(--ease-out);
-}
-
-.settings-rail-item:hover {
-  color: var(--bone);
-}
-
-.settings-rail-item.active {
-  color: var(--ember-hi);
-}
-
-.settings-rail-ic {
-  width: 14px;
-  height: 14px;
-  flex: none;
-  opacity: 0.6;
-  transition: opacity 0.2s var(--ease-out);
-}
-
-.settings-rail-item.active .settings-rail-ic {
-  opacity: 1;
-}
-
-.settings-rail-num {
-  margin-left: auto;
-  font-size: 8px;
-  letter-spacing: 0.1em;
-  color: var(--faint);
-  transition: color 0.2s var(--ease-out);
-}
-
-.settings-rail-item.active .settings-rail-num {
-  color: rgb(255 138 61 / 0.55);
-}
-
-.settings-indicator {
-  position: absolute;
-  left: 6px;
-  z-index: 0;
-  border-radius: 11px;
-  background: var(--ember-faint);
-  box-shadow: var(--shadow-hairline);
-  transition:
-    top 0.35s var(--ease-spring),
-    height 0.35s var(--ease-spring);
-}
-
-.settings-indicator::before {
-  content: "";
-  position: absolute;
-  left: 3px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 2.5px;
-  height: 16px;
-  border-radius: 99px;
-  background: linear-gradient(180deg, var(--ember-hi), var(--ember-deep));
-  box-shadow: 0 0 8px var(--ember-glow);
-}
-
-.settings-section {
-  scroll-margin-top: calc(var(--hud-height) + 16px);
+  background: rgb(236 229 218 / 0.3);
+  box-shadow: 0 0 10px rgb(0 0 0 / 0.6);
 }
 
 @media (min-width: 768px) {
-  .page {
-    padding-bottom: 64px;
-  }
-}
-
-@media (max-width: 1100px) {
-  .grid-4 {
-    grid-template-columns: repeat(2, 1fr);
-  }
-
-  .grid-3 {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 860px) {
-  .page {
-    padding:
-      calc(var(--hud-height) + env(safe-area-inset-top, 0px) + 20px) 18px calc(80px + env(safe-area-inset-bottom, 0px));
-  }
-
-  .grid-2,
-  .grid-3,
-  .grid-4 {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 767px) {
-  .shell {
-    padding-left: 0;
-    padding-bottom: calc(var(--dock-height, 72px) + env(safe-area-inset-bottom, 0px));
-  }
-
-  .page {
-    padding:
-      calc(env(safe-area-inset-top, 0px) + 16px) 16px calc(80px + env(safe-area-inset-bottom, 0px));
-  }
-
-  .page-head {
-    margin-bottom: 22px;
-  }
-
-  .settings-section {
-    scroll-margin-top: 64px;
-  }
-
-  .cortex-root {
-    min-height: 0;
-  }
-
-  .stat-tile {
-    padding: 14px 16px;
-  }
-
-  .stat-tile-value {
-    font-size: 24px;
-  }
-
-  .ingest-drop {
-    min-height: 9rem;
-    padding: 1.5rem 1.25rem;
-    gap: 12px;
-  }
-}
-
-@media (hover: none) {
-  .vault-del {
-    opacity: 0.72;
-  }
-
-  .vault-open {
-    opacity: 0.85;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.001s !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.001s !important;
-    scroll-behavior: auto !important;
+  .dock-peek {
+    display: none;
   }
 }
 
