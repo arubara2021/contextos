@@ -470,7 +470,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
             <span>{formatClock(message.timestamp)}</span>
             <span>you</span>
           </div>
-          <div className="msg-text msg-text--user">{message.content}</div>
+          <div className="msg-text">{message.content}</div>
           <div className="msg-actions">
             <CopyButton text={message.content} />
           </div>
@@ -484,7 +484,6 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     const age = Date.now() - new Date(message.timestamp).getTime();
     return Number.isFinite(age) && age >= 0 && age < FRESH_WINDOW_MS;
   });
-
   const segments = useMemo(() => segmentContent(message.content), [message.content]);
   const codeMetas = useMemo(() => segments.map((s) => codeMeta(s)), [segments]);
   const parsedFull = useMemo(() => segments.map((s) => parseBlocks(s)), [segments]);
@@ -494,7 +493,6 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   );
   const totalLen = useMemo(() => revealLens.reduce((a, b) => a + b, 0), [revealLens]);
   const fullBlocks = useMemo(() => parseBlocks(message.content), [message.content]);
-
   const [shown, setShown] = useState(animate ? 0 : totalLen);
   const [done, setDone] = useState(!animate || totalLen === 0);
   const completeRef = useRef(!animate || totalLen === 0);
@@ -551,9 +549,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
     for (let i = 0; i < activeIndex; i++) {
       const meta = codeMetas[i];
       if (meta) {
-        rendered.push(
-          <CodeBlock key={`done-${i}`} lang={meta.lang} code={meta.body} />
-        );
+        rendered.push(<CodeBlock key={`done-${i}`} lang={meta.lang} code={meta.body} />);
       } else {
         rendered.push(
           <Fragment key={`done-${i}`}>
