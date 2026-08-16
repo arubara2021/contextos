@@ -75,10 +75,10 @@ function useMobileNavVisibility(): boolean {
       }
     };
     const onFocusOut = () => {
-      window.setTimeout(() => {
-        const a = document.activeElement;
+      setTimeout(() => {
+        const a = document.activeElement as HTMLElement | null;
         const stillFocused =
-          a &&
+          !!a &&
           (a.tagName === "INPUT" ||
             a.tagName === "TEXTAREA" ||
             a.contentEditable === "true");
