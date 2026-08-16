@@ -13,53 +13,80 @@ const NAV_ITEMS = [
 
 function useMobileNavVisibility(): boolean {
   const [hidden, setHidden] = useState(false);
-  const lastY = useRef(0);
+  const hiddenRef = useRef(false);
+  const lastYRef = useRef(0);
+  const lastTargetRef = useRef<EventTarget | null>(null);
   const idleTimer = useRef(0);
   const isMobile = useRef(false);
+
+  useEffect(() => {
+    hiddenRef.current = hidden;
+  }, [hidden]);
 
   useEffect(() => {
     isMobile.current = window.innerWidth < 1024;
     if (!isMobile.current) return;
 
+    const show = () => {
+      if (hiddenRef.current) setHidden(false);
+    };
+    const hide = () => {
+      if (!hiddenRef.current) setHidden(true);
+    };
     const startIdleTimer = () => {
-      clearTimeout(idleTimer.current);
-      idleTimer.current = window.setTimeout(() => setHidden(true), 4000);
+      window.clearTimeout(idleTimer.current);
+      idleTimer.current = window.setTimeout(hide, 4000);
+    };
+    const isTyping = () => {
+      const a = document.activeElement as HTMLElement | null;
+      return (
+        !!a &&
+        (a.tagName === "INPUT" ||
+          a.tagName === "TEXTAREA" ||
+          a.isContentEditable === true)
+      );
     };
 
     const onTouch = () => {
-      if (hidden) {
-        setHidden(false);
-        startIdleTimer();
-      }
+      if (isTyping()) return;
+      show();
+      startIdleTimer();
     };
 
     let raf = 0;
-    const onScroll = () => {
+    const onScroll = (event: Event) => {
+      const raw = event.target;
+      const el =
+        raw instanceof HTMLElement
+          ? raw
+          : raw === document
+            ? (document.scrollingElement as HTMLElement | null)
+            : null;
+      if (!el) return;
+      const maxScroll = el.scrollHeight - el.clientHeight;
+      if (maxScroll < 40) return;
+      const scrollTop = el.scrollTop;
+      if (lastTargetRef.current !== el) {
+        lastTargetRef.current = el;
+        lastYRef.current = scrollTop;
+        return;
+      }
       cancelAnimationFrame(raf);
       raf = requestAnimationFrame(() => {
-        let maxScroll = 0;
-        let scrollTop = 0;
-        const page = document.querySelector(".page");
-        const main = document.querySelector("main");
-        const target = page || main;
-        if (target) {
-          maxScroll = target.scrollHeight - target.clientHeight;
-          scrollTop = target.scrollTop;
-        }
-
-        if (maxScroll < 40) {
-          setHidden(true);
+        const delta = scrollTop - lastYRef.current;
+        lastYRef.current = scrollTop;
+        if (isTyping()) return;
+        if (scrollTop <= 4) {
+          show();
+          startIdleTimer();
           return;
         }
-
-        const delta = scrollTop - lastY.current;
-        if (delta > 6 && scrollTop > 40) {
-          setHidden(true);
+        if (delta > 6 && scrollTop > 60) {
+          hide();
         } else if (delta < -6) {
-          setHidden(false);
+          show();
           startIdleTimer();
         }
-        lastY.current = scrollTop;
       });
     };
 
@@ -70,21 +97,14 @@ function useMobileNavVisibility(): boolean {
         t.tagName === "TEXTAREA" ||
         t.contentEditable === "true"
       ) {
-        setHidden(true);
-        clearTimeout(idleTimer.current);
+        window.clearTimeout(idleTimer.current);
+        hide();
       }
     };
-
     const onFocusOut = () => {
-      setTimeout(() => {
-        const a = document.activeElement;
-        const stillFocused =
-          a &&
-          (a.tagName === "INPUT" ||
-            a.tagName === "TEXTAREA" ||
-            (a as HTMLElement).contentEditable === "true");
-        if (!stillFocused) {
-          setHidden(false);
+      window.setTimeout(() => {
+        if (!isTyping()) {
+          show();
           startIdleTimer();
         }
       }, 150);
@@ -94,18 +114,16 @@ function useMobileNavVisibility(): boolean {
     document.addEventListener("scroll", onScroll, { passive: true, capture: true });
     document.addEventListener("focusin", onFocusIn, true);
     document.addEventListener("focusout", onFocusOut, true);
-
     startIdleTimer();
-
     return () => {
-      clearTimeout(idleTimer.current);
+      window.clearTimeout(idleTimer.current);
       cancelAnimationFrame(raf);
       document.removeEventListener("touchstart", onTouch);
       document.removeEventListener("scroll", onScroll, true);
       document.removeEventListener("focusin", onFocusIn, true);
       document.removeEventListener("focusout", onFocusOut, true);
     };
-  }, [hidden]);
+  }, []);
 
   return !isMobile.current ? false : hidden;
 }
