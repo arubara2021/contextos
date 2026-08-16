@@ -2,6 +2,7 @@ import { Outlet, useLocation } from "react-router-dom";
 import { Rail } from "./Rail";
 import { TopHud } from "./TopHud";
 import { DemoBanner } from "./DemoBanner";
+import { MobileDock } from "./MobileDock";
 import { ROUTES } from "../../constants";
 
 export function ShellLayout() {
@@ -30,6 +31,8 @@ export function ShellLayout() {
       <main className="relative z-10 h-full lg:pl-[72px]">
         <Outlet />
       </main>
+
+      <MobileDock />
     </div>
   );
 }
