@@ -78,9 +78,34 @@ export function useDemo() {
       try {
         await api.auth.me();
       } catch (err) {
-        if (!cancelled) {
-          const status = err instanceof ApiError ? err.status : 0;
-          if (status === 401 || status === 404) clearDemo();
+        if (cancelled) return;
+        const status = err instanceof ApiError ? err.status : 0;
+        if (status === 401 || status === 404) {
+          try {
+            const data = await api.demo.startSandbox();
+            if (cancelled) return;
+            setToken(data.token, true);
+            setStoredUser(data.user, true);
+            const demoInfo: StoredDemo = {
+              expiresAt: data.expiresAt,
+              userId: data.user.userId,
+              token: data.token,
+            };
+            localStorage.setItem(DEMO_STORAGE_KEY, JSON.stringify(demoInfo));
+            localStorage.setItem(DEMO_TOKEN_KEY, data.token);
+            setState((s) => ({
+              ...s,
+              isDemo: true,
+              expiresAt: data.expiresAt,
+              remainingMs: data.expiresAt
+                ? Math.max(0, new Date(data.expiresAt).getTime() - Date.now())
+                : Infinity,
+              minting: false,
+              error: null,
+            }));
+          } catch {
+            if (!cancelled) clearDemo();
+          }
         }
       }
     })();

@@ -1,350 +1,401 @@
 ================================================================================
 CONTEXTOS BACKEND CODE DUMP
 ================================================================================
-Total files: 3
+Total files: 2
 ================================================================================
 
 
 ================================================================================
-FILE: src/auth/middleware.ts
+FILE: src/storage/user-store.ts
 ================================================================================
 
-import "dotenv/config";
-import { Request, Response, NextFunction } from "express";
-import { verifyToken } from "../auth/tokens";
-import type { TokenPayload } from "../models/user.model";
-import { getUserStore } from "../storage/user-store";
+import { query, queryOne, queryMany, withTransaction } from "../database";
+import {
+  User,
+  UserRow,
+  UserResponse,
+  UserCreateParams,
+  UserUpdateParams,
+  mapRowToUser,
+  toUserResponse,
+} from "../models/user.model";
+import { hashPassword } from "../auth/password";
+import { v4 as uuidv4 } from "uuid";
 import logger from "../utils/logger";
 
-export interface AuthenticatedRequest extends Request {
-  userId?: string;
-  userEmail?: string;
-  tokenPayload?: TokenPayload;
-}
-
-const DEV_BYPASS_AUTH = ["true", "1", "yes"].includes(
-  (process.env.DEV_BYPASS_AUTH ?? "false").toLowerCase().trim()
-);
-
-const DEV_BYPASS_TOKEN = process.env.DEV_BYPASS_TOKEN ?? "dev-bypass-token";
-const DEV_BYPASS_EMAIL = process.env.DEV_BYPASS_EMAIL ?? "demo@contextos.local";
-
-let devUserCache: { userId: string; email: string } | null | undefined = undefined;
-
-async function resolveDevUser(): Promise<{ userId: string; email: string } | null> {
-  if (devUserCache) {
-    return devUserCache;
-  }
-
-  try {
-    let user = await getUserStore().getUserByEmail(DEV_BYPASS_EMAIL);
-
-    if (!user) {
-      logger.info("Dev bypass: demo user not found, creating...");
-      try {
-        user = await getUserStore().createUser({
-          email: DEV_BYPASS_EMAIL,
-          passwordHash: "dev-bypass-no-login",
-          displayName: "Vera Lindqvist",
-        });
-        logger.info("Dev bypass: demo user created", { userId: user.userId });
-      } catch (createErr) {
-        // User might have been created by a race condition, try again
-        user = await getUserStore().getUserByEmail(DEV_BYPASS_EMAIL);
-        if (!user) {
-          devUserCache = null;
-          logger.error("Dev bypass: failed to create demo user", {
-            error: (createErr as Error).message,
-          });
-          return null;
-        }
+export class UserStore {
+  async createUser(params: UserCreateParams): Promise<User> {
+    try {
+      const userId = uuidv4();
+      if (!params.password) {
+        throw new Error("Password is required");
       }
-    }
+      const passwordHash = await hashPassword(params.password);
+      const displayName = params.displayName ?? params.email.split("@")[0];
 
-    devUserCache = {
-      userId: user.userId,
-      email: user.email,
-    };
+      const row = await queryOne<UserRow>(
+        `INSERT INTO users (user_id, email, password_hash, display_name)
+         VALUES ($1, $2, $3, $4)
+         RETURNING *`,
+        [userId, params.email.toLowerCase(), passwordHash, displayName]
+      );
 
-    logger.info("Dev bypass resolved demo user", {
-      userId: user.userId,
-      email: user.email,
-    });
+      if (!row) {
+        throw new Error("Failed to create user: no row returned");
+      }
 
-    return devUserCache;
-  } catch (error) {
-    devUserCache = null;
-    logger.error("Dev bypass user resolution failed", {
-      error: (error as Error).message,
-    });
-    return null;
-  }
-}
-
-export async function authMiddleware(
-  req: AuthenticatedRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader) {
-    res.status(401).json({ error: "Authorization header required" });
-    return;
-  }
-
-  const parts = authHeader.split(" ");
-
-  if (parts.length !== 2 || parts[0] !== "Bearer") {
-    res.status(401).json({ error: "Authorization header must be: Bearer <token>" });
-    return;
-  }
-
-  const token = parts[1];
-
-  if (!token || token.length === 0) {
-    res.status(401).json({ error: "Token is empty" });
-    return;
-  }
-
-  if (DEV_BYPASS_AUTH && token === DEV_BYPASS_TOKEN) {
-    const dev = await resolveDevUser();
-
-    if (!dev) {
-      res.status(401).json({
-        error: "Dev bypass enabled but demo user missing",
-        details: `Run: npx ts-node src/scripts/seed-demo.ts (expected email: ${DEV_BYPASS_EMAIL})`,
-      });
-      return;
-    }
-
-    req.userId = dev.userId;
-    req.userEmail = dev.email;
-    req.tokenPayload = {
-      userId: dev.userId,
-      email: dev.email,
-    };
-
-    next();
-    return;
-  }
-
-  try {
-    const payload = verifyToken(token);
-
-    if (!payload) {
-      res.status(401).json({ error: "Invalid or expired token" });
-      return;
-    }
-
-    req.userId = payload.userId;
-    req.userEmail = payload.email;
-    req.tokenPayload = payload;
-
-    next();
-  } catch (error) {
-    const err = error as Error;
-
-    if (err.name === "TokenExpiredError") {
-      logger.debug("Token expired", {
-        path: req.path,
-        method: req.method,
-      });
-
-      res.status(401).json({ error: "Token expired" });
-      return;
-    }
-
-    if (err.name === "JsonWebTokenError") {
-      logger.debug("Invalid token", {
-        path: req.path,
-        method: req.method,
+      return mapRowToUser(row);
+    } catch (error) {
+      const err = error as Error;
+      if (err.message.includes("duplicate") || err.message.includes("unique")) {
+        logger.warn("User creation failed: email already exists", {
+          email: params.email,
+        });
+        throw new Error("Email already registered");
+      }
+      logger.error("createUser failed", {
+        email: params.email,
         error: err.message,
       });
-
-      res.status(401).json({ error: "Invalid token" });
-      return;
+      throw error;
     }
-
-    logger.error("Auth middleware unexpected error", {
-      path: req.path,
-      method: req.method,
-      error: err.message,
-    });
-
-    res.status(500).json({ error: "Authentication error" });
-  }
-}
-
-export async function optionalAuthMiddleware(
-  req: AuthenticatedRequest,
-  _res: Response,
-  next: NextFunction
-): Promise<void> {
-  const authHeader = req.headers.authorization;
-
-  if (!authHeader) {
-    next();
-    return;
   }
 
-  const parts = authHeader.split(" ");
-
-  if (parts.length !== 2 || parts[0] !== "Bearer") {
-    next();
-    return;
-  }
-
-  const token = parts[1];
-
-  if (!token || token.length === 0) {
-    next();
-    return;
-  }
-
-  if (DEV_BYPASS_AUTH && token === DEV_BYPASS_TOKEN) {
-    const dev = await resolveDevUser();
-
-    if (dev) {
-      req.userId = dev.userId;
-      req.userEmail = dev.email;
-      req.tokenPayload = {
-        userId: dev.userId,
-        email: dev.email,
-      };
-    }
-
-    next();
-    return;
-  }
-
-  try {
-    const payload = verifyToken(token);
-
-    if (payload) {
-      req.userId = payload.userId;
-      req.userEmail = payload.email;
-      req.tokenPayload = payload;
-    }
-  } catch {
-    logger.debug("Optional auth: token invalid, continuing without auth", {
-      path: req.path,
-    });
-  }
-
-  next();
-}
-
-export function requireRole(...roles: string[]) {
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
-    if (!req.userId) {
-      res.status(401).json({ error: "Authentication required" });
-      return;
-    }
-
-    const userRole = (req.tokenPayload as TokenPayload & { role?: string })?.role;
-
-    if (!userRole || !roles.includes(userRole)) {
-      logger.warn("Role authorization failed", {
-        userId: req.userId,
-        requiredRoles: roles,
-        userRole,
-        path: req.path,
-      });
-
-      res.status(403).json({ error: "Insufficient permissions" });
-      return;
-    }
-
-    next();
-  };
-}
-
-interface RateLimitEntry {
-  count: number;
-  resetAt: number;
-}
-
-export function rateLimitByKey(
-  maxRequests: number = 60,
-  windowMs: number = 60000,
-  keyGenerator: (req: AuthenticatedRequest) => string = (req) => {
-    return (
-      req.userId ??
-      req.userEmail ??
-      req.ip ??
-      req.socket.remoteAddress ??
-      "anonymous"
-    );
-  }
-) {
-  const requests = new Map<string, RateLimitEntry>();
-
-  const timer = setInterval(() => {
-    const now = Date.now();
-
-    for (const [key, value] of requests) {
-      if (value.resetAt <= now) {
-        requests.delete(key);
+  async createSandboxUser(
+    params: UserCreateParams & { ttlMinutes: number }
+  ): Promise<User> {
+    try {
+      const userId = uuidv4();
+      if (!params.password) {
+        throw new Error("Password is required");
       }
-    }
-  }, Math.min(windowMs, 60000));
+      const passwordHash = await hashPassword(params.password);
+      const displayName = params.displayName ?? "Sandbox Explorer";
+      const expiresAt = new Date(Date.now() + params.ttlMinutes * 60 * 1000);
 
-  if (typeof timer.unref === "function") {
-    timer.unref();
+      const row = await queryOne<UserRow>(
+        `INSERT INTO users (user_id, email, password_hash, display_name, is_sandbox, expires_at, upload_count)
+         VALUES ($1, $2, $3, $4, true, $5, 0)
+         RETURNING *`,
+        [userId, params.email.toLowerCase(), passwordHash, displayName, expiresAt]
+      );
+
+      if (!row) {
+        throw new Error("Failed to create sandbox user: no row returned");
+      }
+
+      return mapRowToUser(row);
+    } catch (error) {
+      logger.error("createSandboxUser failed", {
+        email: params.email,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+  async getOrCreateSharedSandboxUser(email: string): Promise<User> {
+    try {
+      // 1. Try to find existing shared user
+      const existing = await this.getUserByEmail(email);
+      if (existing) {
+        // Refresh the TTL so it stays alive
+        await query(
+          `UPDATE users
+                 SET expires_at = NULL, updated_at = now()
+                 WHERE user_id = $1 AND is_sandbox = true`,
+          [existing.userId]
+        );
+        logger.info("Shared sandbox user found, reusing", {
+          userId: existing.userId,
+          email: existing.email,
+        });
+        return existing;
+      }
+
+      // 2. Create the shared user if it doesn't exist
+      const userId = uuidv4();
+      const password = uuidv4(); // random password, nobody logs in directly
+      const passwordHash = await hashPassword(password);
+
+      const row = await queryOne<UserRow>(
+        `INSERT INTO users (user_id, email, password_hash, display_name, is_sandbox, expires_at, upload_count)
+             VALUES ($1, $2, $3, $4, true, NULL, 0)
+             RETURNING *`,
+        [userId, email.toLowerCase(), passwordHash, "ContextOS Shared Demo"]
+      );
+
+      if (!row) {
+        throw new Error("Failed to create shared sandbox user");
+      }
+
+      logger.info("Shared sandbox user created", {
+        userId: row.user_id,
+        email: row.email,
+      });
+
+      return mapRowToUser(row);
+    } catch (error) {
+      const err = error as Error;
+
+      // Race condition: another request created it at the same time
+      if (err.message.includes("duplicate") || err.message.includes("unique")) {
+        logger.info("Shared sandbox user created by concurrent request, fetching");
+        const existing = await this.getUserByEmail(email);
+        if (existing) return existing;
+      }
+
+      logger.error("getOrCreateSharedSandboxUser failed", {
+        email,
+        error: err.message,
+      });
+      throw error;
+    }
   }
 
-  return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
-    const key = keyGenerator(req);
-    const now = Date.now();
-
-    let entry = requests.get(key);
-
-    if (!entry || entry.resetAt <= now) {
-      entry = {
-        count: 0,
-        resetAt: now + windowMs,
-      };
-
-      requests.set(key, entry);
-    }
-
-    entry.count += 1;
-
-    res.setHeader("X-RateLimit-Limit", maxRequests);
-    res.setHeader("X-RateLimit-Remaining", Math.max(0, maxRequests - entry.count));
-    res.setHeader("X-RateLimit-Reset", Math.ceil(entry.resetAt / 1000));
-
-    if (entry.count > maxRequests) {
-      logger.warn("Rate limit exceeded", {
-        key,
-        count: entry.count,
-        maxRequests,
-        path: req.path,
+  async tryConsumeSandboxUpload(userId: string, cap: number): Promise<boolean> {
+    try {
+      const result = await query(
+        `UPDATE users
+         SET upload_count = upload_count + 1
+         WHERE user_id = $1 AND is_sandbox = true AND upload_count < $2
+         RETURNING upload_count`,
+        [userId, cap]
+      );
+      return (result.rowCount ?? 0) > 0;
+    } catch (error) {
+      logger.error("tryConsumeSandboxUpload failed", {
+        userId,
+        cap,
+        error: (error as Error).message,
       });
-
-      res.status(429).json({
-        error: "Too many requests",
-        details: "Please slow down and try again shortly.",
-      });
-
-      return;
+      throw error;
     }
+  }
 
-    next();
-  };
+  async getUserByEmail(email: string): Promise<User | null> {
+    try {
+      const row = await queryOne<UserRow>(
+        "SELECT * FROM users WHERE email = $1",
+        [email.toLowerCase()]
+      );
+      return row ? mapRowToUser(row) : null;
+    } catch (error) {
+      logger.error("getUserByEmail failed", {
+        email,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getUserById(userId: string): Promise<User | null> {
+    try {
+      const row = await queryOne<UserRow>(
+        "SELECT * FROM users WHERE user_id = $1",
+        [userId]
+      );
+      return row ? mapRowToUser(row) : null;
+    } catch (error) {
+      logger.error("getUserById failed", {
+        userId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getUserResponse(userId: string): Promise<UserResponse | null> {
+    try {
+      const user = await this.getUserById(userId);
+      return user ? toUserResponse(user) : null;
+    } catch (error) {
+      logger.error("getUserResponse failed", {
+        userId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async updateUser(userId: string, updates: UserUpdateParams): Promise<User | null> {
+    try {
+      const fields: string[] = [];
+      const values: unknown[] = [];
+      let idx = 1;
+
+      if (updates.email !== undefined) {
+        fields.push(`email = $${idx++}`);
+        values.push(updates.email.toLowerCase());
+      }
+      if (updates.displayName !== undefined) {
+        fields.push(`display_name = $${idx++}`);
+        values.push(updates.displayName);
+      }
+
+      if (fields.length === 0) {
+        return this.getUserById(userId);
+      }
+
+      fields.push("updated_at = now()");
+      values.push(userId);
+
+      const row = await queryOne<UserRow>(
+        `UPDATE users
+         SET ${fields.join(", ")}
+         WHERE user_id = $${idx}
+         RETURNING *`,
+        values
+      );
+
+      return row ? mapRowToUser(row) : null;
+    } catch (error) {
+      const err = error as Error;
+      if (err.message.includes("duplicate") || err.message.includes("unique")) {
+        logger.warn("User update failed: email already taken", {
+          userId,
+          email: updates.email,
+        });
+        throw new Error("Email already registered");
+      }
+      logger.error("updateUser failed", {
+        userId,
+        updates,
+        error: err.message,
+      });
+      throw error;
+    }
+  }
+
+  async updatePassword(userId: string, passwordHash: string): Promise<boolean> {
+    try {
+      const result = await query(
+        `UPDATE users
+         SET password_hash = $1, updated_at = now()
+         WHERE user_id = $2`,
+        [passwordHash, userId]
+      );
+      return (result.rowCount ?? 0) > 0;
+    } catch (error) {
+      logger.error("updatePassword failed", {
+        userId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async deleteUser(userId: string): Promise<boolean> {
+    try {
+      return await withTransaction(async (client) => {
+        const sessionRows = await client.query(
+          "SELECT session_id FROM sessions WHERE user_id = $1",
+          [userId]
+        );
+        const sessionIds = sessionRows.rows.map((r) => r.session_id as string);
+
+        if (sessionIds.length > 0) {
+          await client.query(
+            "DELETE FROM messages WHERE session_id = ANY($1)",
+            [sessionIds]
+          );
+          await client.query(
+            "DELETE FROM sessions WHERE user_id = $1",
+            [userId]
+          );
+        }
+
+        await client.query(
+          "DELETE FROM reminders WHERE user_id = $1",
+          [userId]
+        );
+
+        const result = await client.query(
+          "DELETE FROM users WHERE user_id = $1",
+          [userId]
+        );
+
+        return (result.rowCount ?? 0) > 0;
+      });
+    } catch (error) {
+      logger.error("deleteUser failed", {
+        userId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async listUsers(limit: number = 50, offset: number = 0): Promise<UserResponse[]> {
+    try {
+      const rows = await queryMany<UserRow>(
+        "SELECT * FROM users ORDER BY created_at DESC LIMIT $1 OFFSET $2",
+        [limit, offset]
+      );
+      return rows.map((row) => toUserResponse(mapRowToUser(row)));
+    } catch (error) {
+      logger.error("listUsers failed", {
+        limit,
+        offset,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async getTotalCount(): Promise<number> {
+    try {
+      const row = await queryOne<{ count: number }>(
+        "SELECT COUNT(*)::int AS count FROM users"
+      );
+      return row?.count ?? 0;
+    } catch (error) {
+      logger.error("getTotalCount failed", {
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async exists(userId: string): Promise<boolean> {
+    try {
+      const row = await queryOne<{ exists: boolean }>(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE user_id = $1) AS exists",
+        [userId]
+      );
+      return row?.exists ?? false;
+    } catch (error) {
+      logger.error("exists failed", {
+        userId,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
+
+  async emailExists(email: string): Promise<boolean> {
+    try {
+      const row = await queryOne<{ exists: boolean }>(
+        "SELECT EXISTS(SELECT 1 FROM users WHERE email = $1) AS exists",
+        [email.toLowerCase()]
+      );
+      return row?.exists ?? false;
+    } catch (error) {
+      logger.error("emailExists failed", {
+        email,
+        error: (error as Error).message,
+      });
+      throw error;
+    }
+  }
 }
 
-export function rateLimitByUser(maxRequests: number = 60, windowMs: number = 60000) {
-  return rateLimitByKey(maxRequests, windowMs, (req) => {
-    return (
-      req.userId ??
-      req.userEmail ??
-      req.ip ??
-      req.socket.remoteAddress ??
-      "unknown"
-    );
-  });
+let userStoreInstance: UserStore | null = null;
+
+export function getUserStore(): UserStore {
+  if (!userStoreInstance) {
+    userStoreInstance = new UserStore();
+  }
+  return userStoreInstance;
 }
 
 
@@ -577,59 +628,6 @@ export function getTokenRemainingSeconds(token: string): number {
 
   return Math.max(0, Math.floor(remaining / 1000));
 }
-
-
-================================================================================
-FILE: src/api/demo.routes.ts
-================================================================================
-
-import { Router, Request, Response } from "express";
-import { getDependencies } from "./dependencies";
-import { generateToken } from "../auth/tokens";
-import { toUserResponse } from "../models/user.model";
-import { rateLimitByKey } from "../auth/middleware";
-import config from "../config";
-import logger from "../utils/logger";
-
-const router = Router();
-
-// Shared sandbox: everyone gets the SAME user
-// Rate limit is lenient because this endpoint is now idempotent
-const demoLimiter = rateLimitByKey(100, 60 * 60 * 1000, (req) => {
-  return req.ip ?? req.socket.remoteAddress ?? "unknown";
-});
-
-router.post("/start", demoLimiter, async (_req: Request, res: Response) => {
-  try {
-    const { userStore } = getDependencies();
-
-    const sharedEmail = config.sandbox.sharedEmail;
-
-    if (!sharedEmail) {
-      res.status(500).json({ error: "Shared sandbox not configured" });
-      return;
-    }
-
-    // Always returns the SAME user — never creates a new one per device
-    const user = await userStore.getOrCreateSharedSandboxUser(sharedEmail);
-
-    const token = generateToken(user.userId, user.email);
-
-    res.status(200).json({
-      token,
-      user: toUserResponse(user),
-      expiresAt: null, // shared sandbox does not expire
-      ttlMinutes: 0,   // no TTL for shared
-    });
-  } catch (error) {
-    logger.error("POST /demo/start failed", {
-      error: (error as Error).message,
-    });
-    res.status(500).json({ error: "Failed to launch sandbox" });
-  }
-});
-
-export default router;
 
 
 ================================================================================

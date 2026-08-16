@@ -38,6 +38,13 @@ interface AuthState {
   error: string | null;
 }
 
+interface SandboxMint {
+  token: string;
+  user: User;
+  expiresAt: string | null;
+  ttlMinutes: number;
+}
+
 const EMPTY_STATE: AuthState = {
   user: null,
   token: null,
@@ -67,6 +74,10 @@ function getDemoExpiry(): number | null {
   }
 }
 
+function hasDemoMarker(): boolean {
+  return getDemoToken() !== null;
+}
+
 function isSandboxSession(): boolean {
   const demoToken = getDemoToken();
   if (!demoToken) return false;
@@ -79,6 +90,24 @@ function clearDemoStorage(): void {
   try {
     localStorage.removeItem(DEMO_STORAGE_KEY);
     localStorage.removeItem(DEMO_TOKEN_KEY);
+  } catch {
+    return;
+  }
+}
+
+function persistSandboxMint(data: SandboxMint): void {
+  setToken(data.token, true);
+  setStoredUser(data.user, true);
+  try {
+    localStorage.setItem(
+      DEMO_STORAGE_KEY,
+      JSON.stringify({
+        expiresAt: data.expiresAt,
+        userId: data.user.userId,
+        token: data.token,
+      })
+    );
+    localStorage.setItem(DEMO_TOKEN_KEY, data.token);
   } catch {
     return;
   }
@@ -109,7 +138,7 @@ function createInitialState(): AuthState {
     return {
       user,
       token: demoToken ?? token,
-      initializing: Boolean(user),
+      initializing: true,
       authenticating: false,
       error: null,
     };
@@ -133,38 +162,40 @@ export function useAuth() {
     }
     let cancelled = false;
 
+    const healSandbox = () =>
+      api.demo
+        .startSandbox()
+        .then((data) => {
+          if (cancelled) return;
+          persistSandboxMint(data);
+          setState((current) => ({
+            ...current,
+            user: data.user,
+            token: data.token,
+            initializing: false,
+            authenticating: false,
+            error: null,
+          }));
+        })
+        .catch(() => {
+          if (cancelled) return;
+          setState((current) => ({ ...current, initializing: false }));
+        });
+
     const onUnauthorized = () => {
       if (cancelled) return;
-      if (isSandboxSession()) {
-        void api.demo
-          .startSandbox()
-          .then((data) => {
-            if (cancelled) return;
-            setToken(data.token, true);
-            setStoredUser(data.user, true);
-            localStorage.setItem(DEMO_TOKEN_KEY, data.token);
-            setState((current) => ({
-              ...current,
-              user: data.user,
-              token: data.token,
-              initializing: false,
-              authenticating: false,
-              error: null,
-            }));
-          })
-          .catch(() => {
-            if (cancelled) return;
-            setState((current) => ({ ...current, initializing: false }));
-          });
+      if (isSandboxSession() || hasDemoMarker()) {
+        void healSandbox();
         return;
       }
       setState({ ...EMPTY_STATE });
     };
+
     window.addEventListener(UNAUTHORIZED_EVENT, onUnauthorized);
 
     const sandbox = isSandboxSession();
     const token = getToken();
-    if (!sandbox && (!token || isTokenExpired())) {
+    if (!sandbox && !hasDemoMarker() && (!token || isTokenExpired())) {
       clearToken();
       setState({ ...EMPTY_STATE });
       return () => {
@@ -177,9 +208,7 @@ export function useAuth() {
         ? api.demo
           .startSandbox()
           .then((data) => {
-            setToken(data.token, true);
-            setStoredUser(data.user, true);
-            localStorage.setItem(DEMO_TOKEN_KEY, data.token);
+            if (!cancelled) persistSandboxMint(data);
           })
           .catch(() => undefined)
         : Promise.resolve();
@@ -200,7 +229,35 @@ export function useAuth() {
         if (cancelled) return;
         const is401 = err instanceof ApiError && err.status === 401;
         const isUserDeleted = err instanceof ApiError && err.status === 404;
-        if ((is401 || isUserDeleted) && !isSandboxSession()) {
+        if (isSandboxSession() || hasDemoMarker()) {
+          void api.demo
+            .startSandbox()
+            .then((data) => {
+              if (cancelled) return;
+              persistSandboxMint(data);
+              return api.auth.me().then(({ user: healedUser }) => {
+                if (cancelled) return;
+                setStoredUser(healedUser);
+                setState((current) => ({
+                  ...current,
+                  user: healedUser,
+                  token: getToken(),
+                  initializing: false,
+                  error: null,
+                }));
+              });
+            })
+            .catch(() => {
+              if (cancelled) return;
+              setState((current) => ({
+                ...current,
+                initializing: false,
+                error: null,
+              }));
+            });
+          return;
+        }
+        if (is401 || isUserDeleted) {
           clearToken();
           setState({ ...EMPTY_STATE });
         } else {

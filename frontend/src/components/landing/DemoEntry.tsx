@@ -48,7 +48,7 @@ export function DemoEntry() {
       if (success) {
         setLaunched(true);
         redirectRef.current = window.setTimeout(() => {
-          window.location.assign(ROUTES.cortex);
+          window.location.replace(ROUTES.cortex);
         }, 700);
       }
     } catch {
