@@ -6,7 +6,6 @@ import { getToken, isTokenExpired } from "../api";
 export function ProtectedRoute() {
   const { isAuthenticated, initializing } = useAuthContext();
   const location = useLocation();
-
   const token = getToken();
   const hasUsableToken = Boolean(token) && !isTokenExpired();
 
@@ -30,7 +29,13 @@ export function ProtectedRoute() {
   }
 
   if (!isAuthenticated) {
-    return <Navigate to={ROUTES.login} state={{ from: location.pathname }} />;
+    return (
+      <Navigate
+        to={ROUTES.login}
+        replace
+        state={{ from: location.pathname }}
+      />
+    );
   }
 
   return <Outlet />;
