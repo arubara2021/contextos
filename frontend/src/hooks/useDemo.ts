@@ -3,6 +3,7 @@ import { api, ApiError, setToken, setStoredUser, clearToken } from "../api";
 
 const DEMO_STORAGE_KEY = "contextos.demo";
 const DEMO_TOKEN_KEY = "contextos.demo.token";
+const BANNER_HIDDEN_KEY = "contextos.demo.bannerHidden";
 
 interface DemoState {
   isDemo: boolean;
@@ -57,6 +58,13 @@ export function useDemo() {
     }
     return { isDemo: false, expiresAt: null, remainingMs: 0, minting: false, error: null };
   });
+  const [bannerHidden, setBannerHidden] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem(BANNER_HIDDEN_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
 
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -67,6 +75,14 @@ export function useDemo() {
       intervalRef.current = null;
     }
     setState({ isDemo: false, expiresAt: null, remainingMs: 0, minting: false, error: null });
+  }, []);
+  const hideBanner = useCallback(() => {
+    try {
+      sessionStorage.setItem(BANNER_HIDDEN_KEY, "1");
+    } catch {
+      return;
+    }
+    setBannerHidden(true);
   }, []);
 
   // Validate cached token once on mount. If the user was deleted or the
@@ -198,6 +214,8 @@ export function useDemo() {
     formattedRemaining,
     launchSandbox,
     clearDemo,
+    hideBanner,
+    bannerHidden,
     isDemoActive: state.isDemo && (state.remainingMs > 0 || !state.expiresAt),
   };
 }

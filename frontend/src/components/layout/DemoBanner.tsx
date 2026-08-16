@@ -2,9 +2,8 @@ import { useDemo } from "../../hooks/useDemo";
 import { Icon } from "../shared/Icon";
 
 export function DemoBanner() {
-  const { isDemoActive, formattedRemaining, clearDemo } = useDemo();
-
-  if (!isDemoActive) return null;
+  const { isDemoActive, formattedRemaining, bannerHidden, hideBanner } = useDemo();
+  if (!isDemoActive || bannerHidden) return null;
 
   const isUrgent = formattedRemaining.startsWith("0");
 
@@ -41,9 +40,9 @@ export function DemoBanner() {
         </span>
 
         <button
-          onClick={clearDemo}
+          onClick={hideBanner}
           className="ml-1 grid h-6 w-6 place-items-center rounded-full text-stone/70 transition-colors hover:bg-soot hover:text-bone"
-          aria-label="Exit sandbox"
+          aria-label="Hide sandbox banner"
         >
           <Icon name="close" size={11} />
         </button>
