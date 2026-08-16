@@ -91,7 +91,7 @@ export function SessionList({
   const body: ReactNode = (
     <>
       <div className="dive-history-head">
-        <span className="flex min-w-0 items-center gap-2">
+        <span className="dive-history-head-left">
           <span className="dive-history-kicker">Conversations</span>
           <span className="dive-history-count">{sessions.length}</span>
         </span>
@@ -104,9 +104,9 @@ export function SessionList({
           <Icon name={inline ? "panel" : "close"} size={15} />
         </button>
       </div>
-      <div className="px-3 pb-3">
+      <div className="dive-history-cta-wrap">
         <button
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-[linear-gradient(145deg,var(--ember-hi),var(--ember-deep))] px-4 py-2.5 font-mono text-[10px] uppercase tracking-[0.22em] text-[#2a1708] shadow-ember transition-all duration-200 hover:-translate-y-px hover:brightness-106 active:scale-[0.97]"
+          className="dive-history-cta"
           onClick={() => void onCreate()}
           aria-label="New conversation"
         >
@@ -114,29 +114,26 @@ export function SessionList({
           <span>new dive</span>
         </button>
       </div>
-      {sessions.length >= 8 && (
-        <div className="px-3 pb-2.5">
-          <div className="flex items-center gap-2.5 rounded-xl border border-line bg-[rgb(14_11_9/0.55)] px-3 py-2 transition-colors duration-200 focus-within:border-[rgb(255_138_61/0.35)]">
-            <Icon name="search" size={13} className="flex-none text-stone" />
-            <input
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search dives"
-              aria-label="Search conversations"
-              className="w-full bg-transparent text-[12.5px] font-light text-bone outline-none placeholder:text-[color:var(--faint)]"
-            />
-            {query && (
-              <button
-                onClick={() => setQuery("")}
-                aria-label="Clear search"
-                className="flex-none text-stone transition-colors duration-150 hover:text-bone"
-              >
-                <Icon name="close" size={12} />
-              </button>
-            )}
-          </div>
+      <div className="dive-history-search-wrap">
+        <div className="dive-history-search">
+          <Icon name="search" size={13} className="dive-history-search-icon" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="Search dives"
+            aria-label="Search conversations"
+          />
+          {query && (
+            <button
+              className="dive-history-search-clear"
+              onClick={() => setQuery("")}
+              aria-label="Clear search"
+            >
+              <Icon name="close" size={12} />
+            </button>
+          )}
         </div>
-      )}
+      </div>
       <div className="dive-history-list">
         {sessions.length === 0 && (
           <div className="dive-history-empty">
@@ -168,13 +165,11 @@ export function SessionList({
               return (
                 <div className="dive-history-item" key={session.sessionId}>
                   {confirming ? (
-                    <div className="fx-rise flex items-center gap-2.5 rounded-[14px] border border-flare/40 bg-[rgb(255_92_73/0.08)] px-3 py-2.5">
-                      <Icon name="trash" size={13} className="flex-none text-flare" />
-                      <span className="min-w-0 flex-1 truncate text-[12.5px] font-light text-bone/90">
-                        {session.title}
-                      </span>
+                    <div className="dive-history-confirm fx-rise">
+                      <Icon name="trash" size={13} className="dive-history-confirm-icon" />
+                      <span className="dive-history-confirm-title">{session.title}</span>
                       <button
-                        className="grid h-8 w-8 flex-none place-items-center rounded-lg border border-flare/40 text-flare transition-all duration-150 hover:bg-flare/15 active:scale-90"
+                        className="dive-history-confirm-yes"
                         onClick={() => {
                           setConfirmId(null);
                           onDelete(session.sessionId);
@@ -185,7 +180,7 @@ export function SessionList({
                         <Icon name="check" size={13} />
                       </button>
                       <button
-                        className="grid h-8 w-8 flex-none place-items-center rounded-lg border border-line-strong text-stone transition-all duration-150 hover:bg-soot hover:text-bone active:scale-90"
+                        className="dive-history-confirm-no"
                         onClick={() => setConfirmId(null)}
                         aria-label="Cancel delete"
                         title="Keep it"
@@ -273,8 +268,8 @@ export function SessionList({
           </div>
         ))}
       </div>
-      <div className="dive-history-foot flex items-center gap-2">
-        <span className="h-1.5 w-1.5 flex-none rounded-full bg-ember shadow-ember" />
+      <div className="dive-history-foot">
+        <span className="dive-history-foot-dot" />
         <span>{sessions.length} dives · memories auto-extracted</span>
       </div>
     </>
@@ -282,19 +277,11 @@ export function SessionList({
 
   if (inline) {
     return (
-      <aside
-        className={[
-          "relative flex-none overflow-hidden border-r bg-[linear-gradient(180deg,#14100d_0%,#0f0c0a_100%)] transition-[width,opacity,border-color] duration-300 ease-out",
-          open
-            ? "w-[300px] border-line opacity-100"
-            : "w-0 border-transparent opacity-0",
-        ].join(" ")}
-      >
-        <div className="flex h-full min-h-0 w-[300px] flex-col">{body}</div>
+      <aside className="dive-history dive-history--inline">
+        <div className="dive-history-inner">{body}</div>
       </aside>
     );
   }
-
   return (
     <aside
       className={`dive-history dive-history--drawer${open ? " open" : ""}`}

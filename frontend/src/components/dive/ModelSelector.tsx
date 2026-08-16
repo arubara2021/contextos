@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "../shared/Icon";
 import type { ModelInfo } from "../../types";
 
@@ -11,6 +12,21 @@ interface ModelSelectorProps {
   onSelect: (key: string) => void;
 }
 
+function useIsMobile(): boolean {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined"
+      ? window.matchMedia("(max-width: 767px)").matches
+      : false
+  );
+  useEffect(() => {
+    const mq = window.matchMedia("(max-width: 767px)");
+    const onChange = (event: MediaQueryListEvent) => setIsMobile(event.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+  return isMobile;
+}
+
 export function ModelSelector({
   models,
   activeKey,
@@ -20,6 +36,8 @@ export function ModelSelector({
   onSelect,
 }: ModelSelectorProps) {
   const [open, setOpen] = useState(false);
+  const isMobile = useIsMobile();
+  const rootRef = useRef<HTMLDivElement>(null);
   const active =
     models.find((model) => model.key === (activeKey ?? defaultKey)) ??
     models[0];
@@ -36,6 +54,27 @@ export function ModelSelector({
     return () => window.removeEventListener("keydown", onKey);
   }, [open]);
 
+  useEffect(() => {
+    if (!open || !isMobile) return;
+    const previous = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previous;
+    };
+  }, [open, isMobile]);
+
+  useEffect(() => {
+    if (!open || isMobile) return;
+    const onDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && rootRef.current && !rootRef.current.contains(target)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("pointerdown", onDown);
+    return () => document.removeEventListener("pointerdown", onDown);
+  }, [open, isMobile]);
+
   const label = empty
     ? isOffline
       ? "engine offline"
@@ -44,8 +83,59 @@ export function ModelSelector({
         : "no engines"
     : active?.displayName ?? "Model";
 
+  const listContent = empty ? (
+    <div className="dive-model-empty-state">
+      <span className={`dive-model-empty-glyph ${isOffline ? "is-offline" : ""}`}>
+        <Icon name={isOffline ? "refresh" : "spark"} size={16} />
+      </span>
+      <p className="dive-model-empty-title">
+        {isOffline
+          ? "No engines reachable"
+          : isConnecting
+            ? "Reaching the archive"
+            : "No engines configured"}
+      </p>
+      <p className="dive-model-empty-sub">
+        {isOffline
+          ? "The backend is offline or still booting. Real engines appear here the moment it answers — no stand-ins."
+          : isConnecting
+            ? "Waiting for the backend to answer with its live model list."
+            : "The backend answered but exposed no chat models. Check provider configuration."}
+      </p>
+    </div>
+  ) : (
+    models.map((model) => {
+      const selected = model.key === (activeKey ?? defaultKey);
+      const isDefault = model.key === defaultKey;
+      return (
+        <button
+          key={model.key}
+          role="option"
+          aria-selected={selected}
+          className={`dive-model-option ${selected ? "is-selected" : ""}`}
+          onClick={() => {
+            onSelect(model.key);
+            setOpen(false);
+          }}
+        >
+          <span className="opt-dot" />
+          <span className="opt-body">
+            <span className="opt-name">
+              {model.displayName}
+              {isDefault && <span className="opt-default">default</span>}
+            </span>
+            <span className="opt-meta">
+              {model.provider} · {model.maxTokens.toLocaleString()} tok
+            </span>
+          </span>
+          {selected && <Icon name="check" size={13} className="opt-check" />}
+        </button>
+      );
+    })
+  );
+
   return (
-    <div className="relative">
+    <div className="dive-model-wrap" ref={rootRef}>
       <button
         className={`dive-model ${open ? "is-open" : ""}`}
         onClick={() => setOpen((value) => !value)}
@@ -73,84 +163,29 @@ export function ModelSelector({
         </span>
         <Icon name="chevron" size={12} className="dive-model-chev" />
       </button>
-      {open && (
-        <>
-          <div
-            className="dive-model-veil"
-            onClick={() => setOpen(false)}
-            aria-hidden="true"
-          />
-          <div
-            className="dive-model-menu fx-rise"
-            role="listbox"
-            aria-label="Available models"
-          >
-            <span className="dive-model-sheet-handle" aria-hidden="true" />
-            <p className="dive-model-menu-head">reasoning engine</p>
-            <div className="dive-model-menu-list">
-              {empty ? (
-                <div className="flex flex-col items-center gap-3 px-6 py-8 text-center">
-                  <span
-                    className={`grid h-11 w-11 place-items-center rounded-2xl border ${isOffline
-                        ? "border-flare/40 bg-flare/10 text-flare"
-                        : "border-line-strong bg-soot text-stone"
-                      }`}
-                  >
-                    <Icon name={isOffline ? "refresh" : "spark"} size={16} />
-                  </span>
-                  <p className="text-[13px] text-bone">
-                    {isOffline
-                      ? "No engines reachable"
-                      : isConnecting
-                        ? "Reaching the archive"
-                        : "No engines configured"}
-                  </p>
-                  <p className="max-w-[220px] text-[11.5px] font-light leading-[1.6] text-stone">
-                    {isOffline
-                      ? "The backend is offline or still booting. Real engines appear here the moment it answers — no stand-ins."
-                      : isConnecting
-                        ? "Waiting for the backend to answer with its live model list."
-                        : "The backend answered but exposed no chat models. Check provider configuration."}
-                  </p>
-                </div>
-              ) : (
-                models.map((model) => {
-                  const selected = model.key === (activeKey ?? defaultKey);
-                  const isDefault = model.key === defaultKey;
-                  return (
-                    <button
-                      key={model.key}
-                      role="option"
-                      aria-selected={selected}
-                      className={`dive-model-option ${selected ? "is-selected" : ""}`}
-                      onClick={() => {
-                        onSelect(model.key);
-                        setOpen(false);
-                      }}
-                    >
-                      <span className="opt-dot" />
-                      <span className="opt-body">
-                        <span className="opt-name">
-                          {model.displayName}
-                          {isDefault && (
-                            <span className="opt-default">default</span>
-                          )}
-                        </span>
-                        <span className="opt-meta">
-                          {model.provider} · {model.maxTokens.toLocaleString()} tok
-                        </span>
-                      </span>
-                      {selected && (
-                        <Icon name="check" size={13} className="opt-check" />
-                      )}
-                    </button>
-                  );
-                })
-              )}
-            </div>
-          </div>
-        </>
+      {open && !isMobile && (
+        <div className="dive-model-menu fx-rise" role="listbox" aria-label="Available models">
+          <p className="dive-model-menu-head">reasoning engine</p>
+          <div className="dive-model-menu-list">{listContent}</div>
+        </div>
       )}
+      {open &&
+        isMobile &&
+        createPortal(
+          <>
+            <div
+              className="dive-sheet-veil"
+              onClick={() => setOpen(false)}
+              aria-hidden="true"
+            />
+            <div className="dive-sheet" role="listbox" aria-label="Available models">
+              <span className="dive-sheet-handle" aria-hidden="true" />
+              <p className="dive-model-menu-head">reasoning engine</p>
+              <div className="dive-model-menu-list">{listContent}</div>
+            </div>
+          </>,
+          document.body
+        )}
     </div>
   );
 }
