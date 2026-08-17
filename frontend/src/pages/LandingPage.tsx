@@ -1,6 +1,3 @@
-
-
-// touched
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useAuthContext } from "../auth/AuthProvider";
@@ -12,41 +9,35 @@ import { DecayDemo } from "../components/landing/DecayDemo";
 import { MiniGraph } from "../components/landing/MiniGraph";
 import { DemoEntry } from "../components/landing/DemoEntry";
 import { MobileLandingPage } from "./MobileLandingPage";
+import { ScrambleText, Tilt } from "../components/landing/mobile/fx";
 
 function useReveal<T extends HTMLElement>() {
   const ref = useRef<T | null>(null);
-
   useEffect(() => {
     const el = ref.current;
     if (!el) return;
-
     let done = false;
     const scroller = el.closest(".landing") as HTMLElement | null;
     const target: EventTarget = scroller ?? window;
-
     const inView = () => {
       const rect = el.getBoundingClientRect();
       return rect.top < window.innerHeight * 0.92 && rect.bottom > 0;
     };
-
     let io: IntersectionObserver | null = null;
     let raf = 0;
     let timer = 0;
-
     const cleanup = () => {
       if (io) io.disconnect();
       target.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onScroll);
       window.clearTimeout(timer);
     };
-
     const reveal = () => {
       if (done) return;
       done = true;
       el.classList.add("is-in");
       cleanup();
     };
-
     io = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -59,7 +50,6 @@ function useReveal<T extends HTMLElement>() {
       { root: scroller, threshold: 0, rootMargin: "0px 0px -6% 0px" }
     );
     io.observe(el);
-
     let ticking = false;
     const onScroll = () => {
       if (ticking || done) return;
@@ -69,24 +59,19 @@ function useReveal<T extends HTMLElement>() {
         if (inView()) reveal();
       });
     };
-
     target.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onScroll);
-
     raf = window.requestAnimationFrame(() => {
       if (inView()) reveal();
     });
-
     timer = window.setTimeout(() => {
       if (inView()) reveal();
     }, 1200);
-
     return () => {
       window.cancelAnimationFrame(raf);
       cleanup();
     };
   }, []);
-
   return ref;
 }
 
@@ -101,7 +86,6 @@ function Reveal({ children, className = "", delay = 0 }: { children: ReactNode; 
 
 function CountUp({ value, suffix = "" }: { value: number; suffix?: string }) {
   const [display, setDisplay] = useState(0);
-
   useEffect(() => {
     const duration = 1500;
     const start = performance.now();
@@ -115,7 +99,6 @@ function CountUp({ value, suffix = "" }: { value: number; suffix?: string }) {
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [value]);
-
   return (
     <>
       {display.toLocaleString("en-US")}
@@ -132,7 +115,6 @@ function Typed({ text, play, speed = 26, onDone }: { text: string; play: boolean
   const [n, setN] = useState(0);
   const doneRef = useRef(onDone);
   doneRef.current = onDone;
-
   useEffect(() => {
     if (!play) return;
     let i = 0;
@@ -146,7 +128,6 @@ function Typed({ text, play, speed = 26, onDone }: { text: string; play: boolean
     }, speed);
     return () => window.clearInterval(id);
   }, [play, text, speed]);
-
   return (
     <>
       {text.slice(0, n)}
@@ -179,7 +160,6 @@ const DIVE_SCENARIOS = [
 function DiveLive() {
   const [si, setSi] = useState(0);
   const [stage, setStage] = useState<"q" | "sweep" | "a" | "hold">("q");
-
   useEffect(() => {
     if (stage === "sweep") {
       const t = window.setTimeout(() => setStage("a"), 1300);
@@ -194,9 +174,7 @@ function DiveLive() {
     }
     return undefined;
   }, [stage]);
-
   const sc = DIVE_SCENARIOS[si];
-
   return (
     <div className="dive-live" aria-hidden="true">
       <div className="dl-top">
@@ -207,12 +185,10 @@ function DiveLive() {
         </span>
         <span className="dl-budget-num">{sc.budget}/20</span>
       </div>
-
       <div className="dl-bubble dl-bubble-user">
         <span className="dl-role">you</span>
         <Typed key={`q${si}`} text={sc.q} play onDone={() => setStage("sweep")} />
       </div>
-
       <div className={`dl-trace ${stage !== "q" ? "on" : ""}`}>
         {sc.traces.map((t, i) => (
           <span key={t} className="dl-chip" style={{ transitionDelay: `${i * 0.28}s` }}>
@@ -221,7 +197,6 @@ function DiveLive() {
         ))}
         <span className="dl-sweep-label">graph swept · 2 hops</span>
       </div>
-
       <div className={`dl-bubble dl-bubble-ai ${stage === "a" || stage === "hold" ? "on" : ""}`}>
         <span className="fx-scanline" />
         <span className="dl-role">cortex</span>
@@ -307,15 +282,12 @@ const ENGINE = [
 export function LandingPage() {
   const { isAuthenticated, initializing } = useAuthContext();
   const authed = isAuthenticated && !initializing;
-
   if (typeof window !== "undefined" && window.innerWidth < 768) {
     return <MobileLandingPage />;
   }
-
   return (
     <div className="landing">
       <span className="landing-aura" aria-hidden="true" />
-
       <header className="l-nav">
         <div className="l-nav-inner">
           <button className="l-brand" onClick={() => scrollToId("top")} aria-label="ContextOS home">
@@ -324,7 +296,6 @@ export function LandingPage() {
               Context<span className="l-wordmark-accent">OS</span>
             </span>
           </button>
-
           <nav className="l-nav-links">
             {NAV_LINKS.map((link) => (
               <button key={link.id} className="l-nav-link" onClick={() => scrollToId(link.id)}>
@@ -332,7 +303,6 @@ export function LandingPage() {
               </button>
             ))}
           </nav>
-
           <div className="l-nav-cta">
             {authed ? (
               <Link to={ROUTES.dive} className="l-cta l-cta-primary">
@@ -352,19 +322,16 @@ export function LandingPage() {
           </div>
         </div>
       </header>
-
       <main id="top">
         <section className="hero">
           <HeroGraph />
           <span className="hero-veil" aria-hidden="true" />
-
           <div className="hero-shell">
             <div className="hero-copy">
               <p className="hero-kicker">
                 <span className="hero-kicker-dot" />
-                Persistent memory for AI
+                <ScrambleText text="Persistent memory for AI" />
               </p>
-
               <h1 className="hero-title">
                 {TITLE.map((part, i) =>
                   part.accent ? (
@@ -378,7 +345,6 @@ export function LandingPage() {
                   )
                 )}
               </h1>
-
               <p className="hero-sub fx-rise" style={{ "--rise-delay": "0.5s" } as CSSProperties}>
                 ContextOS distills every document and conversation into a{" "}
                 <strong>living knowledge graph</strong>, exactly once. From then on,{" "}
@@ -386,7 +352,6 @@ export function LandingPage() {
                 cools with neglect and <em>reignites with use</em>, so the system never pretends
                 to know what you have let go.
               </p>
-
               <div className="hero-actions fx-rise" style={{ "--rise-delay": "0.62s" } as CSSProperties}>
                 {authed ? (
                   <Link to={ROUTES.dive} className="l-cta l-cta-primary l-cta-lg">
@@ -404,7 +369,6 @@ export function LandingPage() {
                   See it forget
                 </button>
               </div>
-
               <div className="hero-ticker fx-rise" style={{ "--rise-delay": "0.74s" } as CSSProperties}>
                 <span className="ticker-live">
                   <span className="ticker-live-dot fx-breathe" />
@@ -434,13 +398,11 @@ export function LandingPage() {
               </div>
             </div>
           </div>
-
           <span className="hero-graph-tag hero-graph-tag-tl">
             <span className="hero-graph-tag-dot fx-breathe" />
             live memory field
           </span>
           <span className="hero-graph-tag hero-graph-tag-br">heat encodes strength</span>
-
           <button className="scroll-cue" onClick={() => scrollToId("decay")} aria-label="Scroll down">
             <span className="scroll-cue-mouse">
               <span className="scroll-cue-wheel" />
@@ -448,7 +410,6 @@ export function LandingPage() {
             <span className="scroll-cue-label">watch a memory cool</span>
           </button>
         </section>
-
         <div className="marquee" aria-hidden="true">
           <div className="marquee-track">
             {[...MARQUEE, ...MARQUEE].map((phrase, i) => (
@@ -459,11 +420,13 @@ export function LandingPage() {
             ))}
           </div>
         </div>
-
         <section className="section" id="decay">
           <div className="section-head">
             <Reveal>
-              <p className="sec-kicker">The memory model</p>
+              <p className="sec-kicker">
+                <span className="sec-kicker-idx">01</span>
+                <ScrambleText text="The memory model" />
+              </p>
             </Reveal>
             <Reveal delay={0.08}>
               <h2 className="sec-title">
@@ -481,11 +444,13 @@ export function LandingPage() {
             <DecayDemo />
           </Reveal>
         </section>
-
         <section className="section" id="how">
           <div className="section-head section-head-left">
             <Reveal>
-              <p className="sec-kicker">The pipeline</p>
+              <p className="sec-kicker">
+                <span className="sec-kicker-idx">02</span>
+                <ScrambleText text="The pipeline" />
+              </p>
             </Reveal>
             <Reveal delay={0.08}>
               <h2 className="sec-title">
@@ -493,7 +458,6 @@ export function LandingPage() {
               </h2>
             </Reveal>
           </div>
-
           <div className="pipe">
             <span className="pipe-line" aria-hidden="true" />
             {PIPE.map((step, i) => (
@@ -512,7 +476,6 @@ export function LandingPage() {
               </Reveal>
             ))}
           </div>
-
           <Reveal delay={0.1}>
             <p className="pipe-close">
               <span className="pipe-close-dot fx-flicker" />
@@ -521,11 +484,13 @@ export function LandingPage() {
             </p>
           </Reveal>
         </section>
-
         <section className="section" id="surfaces">
           <div className="section-head">
             <Reveal>
-              <p className="sec-kicker">Two surfaces, one engine</p>
+              <p className="sec-kicker">
+                <span className="sec-kicker-idx">03</span>
+                <ScrambleText text="Two surfaces, one engine" />
+              </p>
             </Reveal>
             <Reveal delay={0.08}>
               <h2 className="sec-title">
@@ -533,53 +498,57 @@ export function LandingPage() {
               </h2>
             </Reveal>
           </div>
-
           <div className="surf-grid">
             <Reveal>
-              <article className="surf-panel surf-panel-ember">
-                <span className="surf-aura" aria-hidden="true" />
-                <p className="surf-kicker">The Cortex</p>
-                <h3 className="surf-title">The graph, as a sky you can steer.</h3>
-                <p className="surf-sub">
-                  Three ways to read the same mind. Orbit lays strength out as a solar system,
-                  constellation groups concepts into galaxies by type, and timeline orders them by
-                  date with a glowing NOW line. Size is weight and heat is strength, legible at a
-                  glance, even on a projector.
-                </p>
-                <ul className="surf-list">
-                  <li>drag a node and it pins exactly where you leave it</li>
-                  <li>search clears the active filter, then flies you in</li>
-                  <li>critical memories flicker red and forgotten ones go to ash</li>
-                </ul>
-                <MiniGraph />
-              </article>
+              <Tilt>
+                <article className="surf-panel surf-panel-ember">
+                  <span className="surf-aura" aria-hidden="true" />
+                  <p className="surf-kicker">The Cortex</p>
+                  <h3 className="surf-title">The graph, as a sky you can steer.</h3>
+                  <p className="surf-sub">
+                    Three ways to read the same mind. Orbit lays strength out as a solar system,
+                    constellation groups concepts into galaxies by type, and timeline orders them by
+                    date with a glowing NOW line. Size is weight and heat is strength, legible at a
+                    glance, even on a projector.
+                  </p>
+                  <ul className="surf-list">
+                    <li>drag a node and it pins exactly where you leave it</li>
+                    <li>search clears the active filter, then flies you in</li>
+                    <li>critical memories flicker red and forgotten ones go to ash</li>
+                  </ul>
+                  <MiniGraph />
+                </article>
+              </Tilt>
             </Reveal>
-
             <Reveal delay={0.12}>
-              <article className="surf-panel surf-panel-mineral">
-                <span className="surf-aura surf-aura-mineral" aria-hidden="true" />
-                <p className="surf-kicker surf-kicker-mineral">The Dive</p>
-                <h3 className="surf-title">Memory injected chat.</h3>
-                <p className="surf-sub">
-                  Ask anything. The graph is swept in parallel, the memories that answer ignite and
-                  join the reply, and a numbered trace cites exactly what was used, so you always
-                  see the mind thinking.
-                </p>
-                <ul className="surf-list">
-                  <li>retrieval adds a fraction of a cent per message, on top of the chat itself</li>
-                  <li>the trace is tappable and jumps straight to the node</li>
-                  <li>your reply is distilled back into the graph</li>
-                </ul>
-                <DiveLive />
-              </article>
+              <Tilt>
+                <article className="surf-panel surf-panel-mineral">
+                  <span className="surf-aura surf-aura-mineral" aria-hidden="true" />
+                  <p className="surf-kicker surf-kicker-mineral">The Dive</p>
+                  <h3 className="surf-title">Memory injected chat.</h3>
+                  <p className="surf-sub">
+                    Ask anything. The graph is swept in parallel, the memories that answer ignite and
+                    join the reply, and a numbered trace cites exactly what was used, so you always
+                    see the mind thinking.
+                  </p>
+                  <ul className="surf-list">
+                    <li>retrieval adds a fraction of a cent per message, on top of the chat itself</li>
+                    <li>the trace is tappable and jumps straight to the node</li>
+                    <li>your reply is distilled back into the graph</li>
+                  </ul>
+                  <DiveLive />
+                </article>
+              </Tilt>
             </Reveal>
           </div>
         </section>
-
         <section className="section" id="engine">
           <div className="section-head">
             <Reveal>
-              <p className="sec-kicker">The engine</p>
+              <p className="sec-kicker">
+                <span className="sec-kicker-idx">04</span>
+                <ScrambleText text="The engine" />
+              </p>
             </Reveal>
             <Reveal delay={0.08}>
               <h2 className="sec-title">
@@ -590,19 +559,19 @@ export function LandingPage() {
               <p className="sec-sub">Three ideas do the heavy lifting. Everything else is simply where they live.</p>
             </Reveal>
           </div>
-
           <div className="engine-grid">
             {ENGINE.map((card, i) => (
               <Reveal key={card.idx} delay={i * 0.08}>
-                <article className="engine-card">
-                  <span className="engine-num">{card.idx}</span>
-                  <h3 className="engine-title">{card.title}</h3>
-                  <p className="engine-body">{card.body}</p>
-                </article>
+                <Tilt max={4}>
+                  <article className="engine-card">
+                    <span className="engine-num">{card.idx}</span>
+                    <h3 className="engine-title">{card.title}</h3>
+                    <p className="engine-body">{card.body}</p>
+                  </article>
+                </Tilt>
               </Reveal>
             ))}
           </div>
-
           <Reveal delay={0.12}>
             <p className="engine-substrate">
               All of it runs on a single CockroachDB cluster that holds the buckets, the vectors,
@@ -611,13 +580,13 @@ export function LandingPage() {
             </p>
           </Reveal>
         </section>
-
         <DemoEntry />
-
         <section className="cta-band">
           <span className="cta-aura" aria-hidden="true" />
           <Reveal>
-            <p className="sec-kicker sec-kicker-center">Open the archive</p>
+            <p className="sec-kicker sec-kicker-center">
+              <ScrambleText text="Open the archive" />
+            </p>
           </Reveal>
           <Reveal delay={0.08}>
             <h2 className="cta-title">
